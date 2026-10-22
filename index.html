@@ -8,63 +8,90 @@
 <link rel="icon" href="icon.svg" type="image/svg+xml">
 <title>Site Survey RF</title>
 <style>
-  :root { --bg:#f6f7f9; --fg:#1b1f24; --muted:#5b6470; --card:#fff; --line:#d9dee5; --acc:#1f6feb; --bad:#d33; }
-  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e6e9ee; --muted:#9aa4b1; --card:#171b21; --line:#2a313a; --acc:#4c8dff; --bad:#ff6b6b; } }
+  :root { --bg:#f6f7f9; --fg:#1b1f24; --muted:#5b6470; --card:#fff; --line:#d9dee5; --acc:#1f6feb; --bad:#d33; --warn:#b26b00; --ok:#1a7f37;
+          --tr-live:#1f6feb; --tr-avg:#8250df; --tr-max:#d4760a; }
+  @media (prefers-color-scheme: dark) { :root { --bg:#0f1216; --fg:#e6e9ee; --muted:#9aa4b1; --card:#171b21; --line:#2a313a; --acc:#4c8dff; --bad:#ff6b6b; --warn:#e3a33b; --ok:#3fb950;
+          --tr-live:#58a6ff; --tr-avg:#bc8cff; --tr-max:#f0a33a; } }
   * { box-sizing:border-box; }
-  body { margin:0; font:15px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); padding-bottom:84px; }
-  header { padding:10px 16px; border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; flex-wrap:wrap; position:sticky; top:0; background:var(--bg); z-index:2; }
-  header h1 { font-size:16px; margin:0 auto 0 0; }
-  main { display:grid; grid-template-columns: 340px 1fr; gap:12px; padding:12px 16px; }
-  @media (max-width: 860px) { main { grid-template-columns: 1fr; } }
-  .col { display:grid; gap:12px; align-content:start; min-width:0; }
+  html, body { height:100%; }
+  body { margin:0; font:15px/1.4 system-ui, sans-serif; background:var(--bg); color:var(--fg); display:flex; flex-direction:column; }
+  header { padding:8px 16px; padding-top:calc(8px + env(safe-area-inset-top)); border-bottom:1px solid var(--line); display:flex; gap:8px; align-items:center; background:var(--bg); }
+  header h1 { font-size:16px; margin:0; white-space:nowrap; }
+  #conn { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-size:12px; color:var(--muted); display:flex; align-items:center; gap:6px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:var(--muted); flex:0 0 auto; }
+  .dot.on { background:var(--ok); }
+  .iconbtn { width:38px; height:38px; min-height:0; padding:0; margin:0; border-radius:50%; font-weight:700; flex:0 0 auto; }
+  main { flex:1; overflow:auto; padding:12px 16px 16px; }
+  .tab { display:none; gap:12px; max-width:1100px; margin:0 auto; }
+  .tab.active { display:grid; }
+  @media (min-width: 900px) { #tab-medir.active { grid-template-columns: 340px 1fr; align-items:start; } #tab-medir .wide { grid-column: 2; grid-row: 1 / span 3; } }
   section { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0; }
-  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; }
+  h2 { font-size:12px; text-transform:uppercase; letter-spacing:.04em; color:var(--muted); margin:0 0 8px; display:flex; align-items:center; gap:8px; }
+  h2 .grow { flex:1; }
   label { display:block; margin:8px 0 2px; color:var(--muted); font-size:12px; }
-  input, select, button { font:inherit; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); width:100%; min-height:42px; }
+  input, select, button { font:inherit; padding:9px 10px; border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--fg); width:100%; min-height:44px; }
+  input[type=checkbox] { width:auto; min-height:0; }
   button { background:var(--acc); color:#fff; border:none; cursor:pointer; margin-top:8px; }
   button.sec { background:transparent; color:var(--fg); border:1px solid var(--line); }
   button:disabled { opacity:.5; cursor:default; }
+  button.small { width:auto; min-height:34px; padding:4px 12px; margin:0; font-size:13px; }
+  button.toggle.on { background:var(--acc); color:#fff; border-color:var(--acc); }
   .row { display:grid; grid-template-columns:1fr 1fr; gap:8px; }
+  .row3 { display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
   .status { font-size:12px; color:var(--muted); }
-  .bad { color:var(--bad); }
-  canvas { width:100%; display:block; background:var(--bg); border-radius:6px; touch-action:manipulation; }
+  .bad { color:var(--bad); } .warn { color:var(--warn); }
+  .chk { display:flex; gap:8px; align-items:center; margin-top:10px; color:var(--muted); font-size:13px; }
+  canvas { width:100%; display:block; background:var(--bg); border-radius:6px; touch-action:none; }
+  #spec { height:min(42vh, 360px); }
+  #wf { height:min(18vh, 160px); margin-top:6px; image-rendering:pixelated; }
+  .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px; }
+  .legend i { display:inline-block; width:14px; height:3px; vertical-align:middle; margin-right:4px; border-radius:2px; }
+  #readout { font:600 13px system-ui; min-height:18px; margin-top:4px; }
+  .colorbar { height:10px; border-radius:5px; background:linear-gradient(90deg, hsl(240,85%,50%), hsl(180,85%,45%), hsl(120,85%,40%), hsl(60,85%,50%), hsl(0,85%,50%)); margin-top:8px; }
+  .colorbar-labels { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
   table { width:100%; border-collapse:collapse; font-size:12px; }
-  td, th { border-bottom:1px solid var(--line); padding:5px 4px; text-align:left; }
+  td, th { border-bottom:1px solid var(--line); padding:6px 4px; text-align:left; }
   .tablewrap { overflow-x:auto; }
-  #log { font:11px monospace; max-height:180px; overflow:auto; white-space:pre-wrap; color:var(--muted); }
-  #bar { position:fixed; left:0; right:0; bottom:0; padding:10px 16px calc(10px + env(safe-area-inset-bottom)); background:var(--card); border-top:1px solid var(--line); display:flex; gap:10px; align-items:center; z-index:3; }
+  #log { font:11px monospace; max-height:220px; overflow:auto; white-space:pre-wrap; color:var(--muted); }
+  #bar { padding:8px 16px; background:var(--card); border-top:1px solid var(--line); display:flex; gap:10px; align-items:center; }
   #bar button { margin:0; font-weight:600; }
-  #bar .status { flex:1; }
-  #btnCapture { flex:0 0 46%; min-height:52px; }
-  button.small { width:auto; min-height:34px; padding:4px 12px; margin:0; }
-  .pill { font-size:11px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
-  .pill.off { color:#b26b00; border-color:#b26b00; }
-  .warn { color:#b26b00; }
+  #capStatus { flex:1; min-width:0; }
+  #btnCapture { flex:0 0 44%; min-height:50px; }
+  nav { display:flex; background:var(--card); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom); }
+  nav button { flex:1; margin:0; border-radius:0; background:transparent; color:var(--muted); border:none; min-height:54px; font-size:13px; font-weight:600; display:flex; flex-direction:column; align-items:center; justify-content:center; gap:2px; }
+  nav button svg { width:22px; height:22px; }
+  nav button.active { color:var(--acc); }
+  details > summary { cursor:pointer; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; list-style:none; display:flex; align-items:center; gap:6px; }
+  details > summary::before { content:'▸'; } details[open] > summary::before { content:'▾'; }
+  details.cfg > summary { font-size:12px; }
+  .summary-line { font-size:13px; color:var(--fg); text-transform:none; letter-spacing:0; margin-left:auto; }
   dialog { width:min(720px, calc(100vw - 32px)); max-height:calc(100vh - 48px); border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--fg); padding:0; }
   dialog::backdrop { background:rgba(0,0,0,.5); }
   #help .head { position:sticky; top:0; background:var(--card); display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line); }
   #help .head h2 { margin:0 auto 0 0; font-size:15px; text-transform:none; letter-spacing:0; color:var(--fg); }
   #help .body { padding:4px 16px 16px; }
   #help h3 { font-size:14px; margin:18px 0 6px; }
-  #help p, #help li { color:var(--fg); }
   #help ol, #help ul { padding-left:20px; margin:6px 0; }
   #help code { font-size:12px; background:var(--bg); padding:1px 4px; border-radius:4px; }
-  details summary { cursor:pointer; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
+  .pill.off { color:var(--warn); border-color:var(--warn); }
 </style>
 </head>
 <body>
 <header>
   <h1>Site Survey RF</h1>
+  <span id="conn"><span id="dot" class="dot"></span><span id="connText">desconectado</span></span>
   <span id="net" class="pill"></span>
-  <span id="conn" class="status">desconectado</span>
-  <button id="btnHelp" class="sec small">Ajuda</button>
+  <button id="btnHelp" class="sec iconbtn" aria-label="Ajuda">?</button>
 </header>
+
 <main>
-  <div class="col">
+  <!-- ===================== MEDIR ===================== -->
+  <div id="tab-medir" class="tab active">
     <section>
-      <h2>Dispositivo</h2>
-      <select id="device"></select>
-      <details style="margin-top:8px"><summary>Opções de conexão</summary>
+      <details id="cfgDev" class="cfg">
+        <summary>Dispositivo <span id="devSummary" class="summary-line"></span></summary>
+        <select id="device" style="margin-top:8px"></select>
         <label>Tipo de conexão USB</label>
         <select id="transport">
           <option value="auto">Automático (WebUSB no Android, Web Serial no PC)</option>
@@ -76,39 +103,57 @@
         <button id="btnDisconnect" class="sec" disabled>Desconectar</button>
       </div>
     </section>
+
     <section>
-      <h2>Varredura</h2>
-      <label>Faixa pronta</label>
-      <select id="preset"></select>
-      <div class="row">
-        <div><label>Início (MHz)</label><input id="fStart" type="number" inputmode="decimal" step="any"></div>
-        <div><label>Fim (MHz)</label><input id="fStop" type="number" inputmode="decimal" step="any"></div>
-      </div>
-      <div class="row">
-        <div><label>Pontos</label><input id="pts" type="number" inputmode="numeric"></div>
-        <div><label>Leituras (média)</label><input id="avg" type="number" inputmode="numeric" min="1"></div>
-      </div>
+      <details id="cfgSweep" class="cfg" open>
+        <summary>Varredura <span id="sweepSummary" class="summary-line"></span></summary>
+        <label>Faixa pronta</label>
+        <select id="preset"></select>
+        <div class="row">
+          <div><label>Início (MHz)</label><input id="fStart" type="number" inputmode="decimal" step="any"></div>
+          <div><label>Fim (MHz)</label><input id="fStop" type="number" inputmode="decimal" step="any"></div>
+        </div>
+        <div class="row">
+          <div><label>Pontos</label><input id="pts" type="number" inputmode="numeric"></div>
+          <div><label>Leituras na coleta (média)</label><input id="avg" type="number" inputmode="numeric" min="1"></div>
+        </div>
+      </details>
       <div id="hint" class="status" style="margin-top:8px"></div>
     </section>
+
+    <section class="wide">
+      <h2><span class="grow">Espectro</span>
+        <button id="btnLive" class="sec small toggle" disabled>Ao vivo</button>
+        <button id="btnResetMax" class="sec small">Zerar max</button>
+      </h2>
+      <canvas id="spec"></canvas>
+      <div class="legend">
+        <span><i style="background:var(--tr-live)"></i>Atual</span>
+        <span><i style="background:var(--tr-avg)"></i>Média</span>
+        <span><i style="background:var(--tr-max)"></i>Max hold</span>
+        <span id="sweepRate"></span>
+      </div>
+      <div id="readout" class="status"></div>
+      <canvas id="wf"></canvas>
+      <div class="status">Waterfall: cada linha é uma varredura, a mais nova em cima.</div>
+    </section>
+
     <section>
       <h2>Ponto de coleta</h2>
       <label>Nome / referência</label><input id="label" placeholder="ex.: Sala 12, corredor B">
       <div class="row">
-        <div><label>Posição na planta</label><input id="xy" readonly placeholder="toque na planta"></div>
-        <div><label>GPS</label><input id="gps" readonly placeholder="—"></div>
+        <div><label>Posição na planta</label><input id="xy" readonly placeholder="toque na aba Mapa"></div>
+        <div><label>GPS</label><input id="gps" readonly placeholder="toque para pegar"></div>
       </div>
-      <label style="display:flex;gap:8px;align-items:center"><input id="autoGps" type="checkbox" style="width:auto;min-height:0"> Pegar GPS automaticamente em cada coleta</label>
+      <label class="chk"><input id="autoGps" type="checkbox"> Pegar GPS automaticamente em cada coleta</label>
     </section>
   </div>
-  <div class="col">
+
+  <!-- ===================== MAPA ===================== -->
+  <div id="tab-mapa" class="tab">
     <section>
-      <h2>Espectro (última leitura)</h2>
-      <canvas id="spec" width="900" height="280"></canvas>
-    </section>
-    <section>
-      <h2>Planta / mapa de calor</h2>
       <div class="row">
-        <div><label>Métrica do mapa</label>
+        <div><label>Métrica</label>
           <select id="metric">
             <option value="max">Pico na faixa (dBm)</option>
             <option value="mean">Média na faixa (dBm)</option>
@@ -116,11 +161,25 @@
           </select></div>
         <div><label>Imagem da planta</label><input id="planFile" type="file" accept="image/*"></div>
       </div>
-      <canvas id="plan" width="900" height="560" style="margin-top:8px"></canvas>
+      <div class="row">
+        <div><label>Fraco ≤ (dBm, vazio = automático)</label><input id="lo" type="number" inputmode="decimal" step="any" placeholder="auto"></div>
+        <div><label>Forte ≥ (dBm, vazio = automático)</label><input id="hi" type="number" inputmode="decimal" step="any" placeholder="auto"></div>
+      </div>
+      <div class="colorbar"></div>
+      <div class="colorbar-labels"><span id="loLbl"></span><span>fraco → forte</span><span id="hiLbl"></span></div>
     </section>
     <section>
+      <h2>Toque na planta onde você está</h2>
+      <canvas id="plan" width="900" height="560"></canvas>
+      <div class="status" style="margin-top:6px">Pontos só com GPS (sem toque na planta) aparecem na aba Dados.</div>
+    </section>
+  </div>
+
+  <!-- ===================== DADOS ===================== -->
+  <div id="tab-dados" class="tab">
+    <section>
       <h2>Pontos coletados (<span id="count">0</span>)</h2>
-      <div class="tablewrap"><table><thead><tr><th>#</th><th>Nome</th><th>Hora</th><th>Pico dBm</th><th>Freq. pico MHz</th><th>Métrica</th><th></th></tr></thead><tbody id="tbl"></tbody></table></div>
+      <div class="tablewrap"><table><thead><tr><th>#</th><th>Nome</th><th>Hora</th><th>Pico dBm</th><th>Freq. pico MHz</th><th>Métrica</th><th>GPS</th><th></th></tr></thead><tbody id="tbl"></tbody></table></div>
       <div class="row">
         <button id="btnCsv" class="sec">Exportar CSV</button>
         <button id="btnJson" class="sec">Exportar JSON</button>
@@ -137,19 +196,39 @@
     </section>
   </div>
 </main>
+
+<div id="bar">
+  <span id="capStatus" class="status">Conecte um dispositivo para começar.</span>
+  <button id="btnCapture" disabled>Coletar ponto</button>
+</div>
+<nav>
+  <button data-tab="medir" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,18 7,16 9,6 11,17 14,12 16,17 22,18"/></svg>Medir</button>
+  <button data-tab="mapa"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>Mapa</button>
+  <button data-tab="dados"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="9" y1="10" x2="9" y2="20"/></svg>Dados</button>
+</nav>
 <dialog id="help">
   <div class="head"><h2>Ajuda</h2><span id="ver" class="status"></span><button id="btnHelpClose" class="sec small">Fechar</button></div>
   <div class="body">
     <h3>Como fazer uma coleta</h3>
+    <p>O app tem três abas embaixo: <b>Medir</b> (conexão, espectro e coleta), <b>Mapa</b> (planta e mapa de calor) e <b>Dados</b> (tabela, exportação e log).</p>
     <ol>
       <li>Ligue o TinySA e conecte no celular com um cabo <b>USB OTG</b>.</li>
-      <li>Em <b>Dispositivo</b>, escolha <b>TinySA Basic (USB)</b> e toque em <b>Conectar</b>. Escolha <b>tinySA</b> na lista e toque em <b>OK</b> quando o Android pedir permissão.</li>
-      <li>Escolha a <b>Faixa pronta</b> (ou digite início e fim em MHz).</li>
-      <li>Carregue a <b>Imagem da planta</b> (foto ou print da planta baixa). É opcional.</li>
-      <li>Toque na planta no lugar onde você está, dê um nome ao ponto se quiser e toque em <b>Coletar ponto</b>.</li>
+      <li>Na aba <b>Medir</b>, toque em <b>Conectar</b>. Na primeira vez, escolha <b>tinySA</b> na lista e toque em <b>OK</b> quando o Android pedir permissão; depois ele reconecta direto.</li>
+      <li>Em <b>Varredura</b>, escolha a <b>Faixa pronta</b> (ou digite início e fim em MHz).</li>
+      <li>Toque em <b>Ao vivo</b> para ver o sinal mudando enquanto anda. Toque no gráfico para ler a frequência e o nível em qualquer ponto.</li>
+      <li>Na aba <b>Mapa</b>, carregue a planta (opcional) e toque onde você está.</li>
+      <li>Dê um nome ao ponto se quiser e toque em <b>Coletar ponto</b>. O ao vivo pausa durante a coleta e volta sozinho.</li>
       <li>Repita em cada ponto. A partir de 3 pontos o mapa de calor aparece.</li>
-      <li>No fim, use <b>Exportar CSV</b> (planilha) ou <b>Exportar JSON</b> (sessão completa, com o espectro de cada ponto).</li>
+      <li>Na aba <b>Dados</b>, use <b>Exportar CSV</b> (planilha) ou <b>Exportar JSON</b> (sessão completa, com o espectro de cada ponto).</li>
     </ol>
+
+    <h3>Gráfico: atual, média e max hold</h3>
+    <ul>
+      <li><b>Atual</b> (azul): a última varredura.</li>
+      <li><b>Média</b> (roxo): média das varreduras recentes, mais estável.</li>
+      <li><b>Max hold</b> (laranja): o maior valor visto em cada frequência. Pega sinais que aparecem e somem, como rádios TETRA e DMR. <b>Zerar max</b> recomeça.</li>
+      <li><b>Waterfall</b>: cada linha é uma varredura, a mais nova em cima; mostra quando cada canal transmite.</li>
+    </ul>
 
     <h3>Antena: conector LOW ou HIGH</h3>
     <p>O TinySA Basic tem dois conectores. O app troca o modo sozinho e mostra embaixo da faixa onde a antena deve estar:</p>
@@ -162,13 +241,14 @@
     <h3>Leituras e pontos</h3>
     <ul>
       <li><b>Pontos</b>: resolução da varredura (até 450). Mais pontos = mais detalhe e mais demora.</li>
-      <li><b>Leituras (média)</b>: quantas varreduras são feitas e somadas em média em cada ponto. 3 é um bom equilíbrio.</li>
+      <li><b>Leituras na coleta (média)</b>: quantas varreduras são somadas em média ao coletar um ponto. 3 é um bom equilíbrio.</li>
+      <li><b>Fraco ≤ / Forte ≥</b> (aba Mapa): fixam a escala de cores do mapa em dBm. Vazio = automático.</li>
       <li><b>Métrica do mapa</b>: <i>pico</i> mostra o sinal mais forte da faixa; <i>média</i> o nível médio; <i>potência integrada</i> soma toda a energia da faixa.</li>
       <li>Para apagar um ponto, use <b>apagar</b> na tabela. <b>Nova sessão</b> apaga todos (exporte antes).</li>
     </ul>
 
     <h3>Funciona sem internet?</h3>
-    <p>Sim. Depois de abrir o app uma vez com internet, ele fica guardado no celular e abre offline. Os pontos, a planta e as configurações ficam salvos no próprio celular, mesmo se o app fechar. Só o GPS depende do sinal de satélite, não da internet. O indicador no topo mostra <b>online</b> ou <b>offline</b>.</p>
+    <p>Sim. Depois de abrir o app uma vez com internet, ele fica guardado no celular e abre offline. Os pontos, a planta e as configurações ficam salvos no próprio celular, mesmo se o app fechar. Só o GPS depende do sinal de satélite, não da internet. O selo no topo mostra <b>online</b> ou <b>offline</b>; a bolinha verde indica TinySA conectado.</p>
     <p>Para instalar: abra o endereço no Chrome e use o menu ⋮ → <b>Instalar app</b>.</p>
 
     <h3>Problemas comuns</h3>
@@ -184,11 +264,6 @@
     <ul id="changelog"></ul>
   </div>
 </dialog>
-
-<div id="bar">
-  <span id="capStatus" class="status">Conecte um dispositivo para começar.</span>
-  <button id="btnCapture" disabled>Coletar ponto</button>
-</div>
 <script type="module" src="js/app.js"></script>
 </body>
 </html>

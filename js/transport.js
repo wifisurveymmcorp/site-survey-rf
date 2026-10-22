@@ -4,12 +4,15 @@
 export class WebSerialTransport {
   static available() { return 'serial' in navigator; }
   constructor(baudRate = 115200, filters = []) { this.baudRate = baudRate; this.filters = filters; }
+  // Reusa uma porta já autorizada antes; só abre a janela de escolha se não houver
   async open() {
-    this.port = await navigator.serial.requestPort({ filters: this.filters });
+    const known = (await navigator.serial.getPorts()).filter(p => this.matches(p.getInfo()));
+    this.port = known.length === 1 ? known[0] : await navigator.serial.requestPort({ filters: this.filters });
     await this.port.open({ baudRate: this.baudRate });
     this.writer = this.port.writable.getWriter();
     this.reader = this.port.readable.getReader();
   }
+  matches(info) { return !this.filters.length || this.filters.some(f => f.usbVendorId === info.usbVendorId); }
   async write(bytes) { await this.writer.write(bytes); }
   async read() {
     const { value, done } = await this.reader.read();
@@ -24,8 +27,10 @@ export class WebSerialTransport {
 export class WebUsbCdcTransport {
   static available() { return 'usb' in navigator; }
   constructor(baudRate = 115200, filters = []) { this.baudRate = baudRate; this.filters = filters; }
+  // Reusa o aparelho já autorizado (sem janela de escolha) quando há exatamente um compatível
   async open() {
-    const d = this.dev = await navigator.usb.requestDevice({ filters: this.filters });
+    const known = (await navigator.usb.getDevices()).filter(d => this.matches(d));
+    const d = this.dev = known.length === 1 ? known[0] : await navigator.usb.requestDevice({ filters: this.filters });
     await d.open();
     if (!d.configuration) await d.selectConfiguration(1);
     const ifaces = d.configuration.interfaces;
@@ -45,6 +50,10 @@ export class WebUsbCdcTransport {
       try { await d.controlTransferOut(setup(0x20), lc.buffer); } catch (_) {}            // SET_LINE_CODING
       try { await d.controlTransferOut({ ...setup(0x22), value: 0x03 }); } catch (_) {}    // DTR + RTS
     }
+  }
+  matches(d) {
+    if (this.filters.length) return this.filters.some(f => f.vendorId === d.vendorId && (!f.productId || f.productId === d.productId));
+    return d.vendorId === 0x0483 || /tinysa/i.test(d.productName || '');
   }
   async write(bytes) { await this.dev.transferOut(this.epOut, bytes); }
   async read() {
