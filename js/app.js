@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 
 const APP_VERSION = '0.7';
 const CHANGELOG = [
-  ['0.7', 'Botão Reiniciar TinySA (comando reset, reconecta sozinho) e destravamento automático quando ele para de responder; Voltar do Android não fecha mais o app de uma vez; tela fica acesa o tempo todo com o app aberto; marcadores M1 a M4 como nos analisadores de bancada: pico, próximo pico, seguir pico, delta em relação ao M1, marcador para centro e para canal; valores dos marcadores salvos em cada ponto, no CSV, no relatório e como métrica do mapa.'],
+  ['0.7', 'Seletor e selo LOW/HIGH, teste de qual conector tem antena e alerta quando a antena parece estar no conector errado; botão Reiniciar TinySA (comando reset, reconecta sozinho) e destravamento automático quando ele para de responder; Voltar do Android não fecha mais o app de uma vez; tela fica acesa o tempo todo com o app aberto; marcadores M1 a M4 como nos analisadores de bancada: pico, próximo pico, seguir pico, delta em relação ao M1, marcador para centro e para canal; valores dos marcadores salvos em cada ponto, no CSV, no relatório e como métrica do mapa.'],
   ['0.6', 'Canal de interesse como métrica do mapa; RBW, atenuação e offset; perfis salvos; coleta automática andando; vários andares e escala na planta; mapa GPS com OpenStreetMap; zoom no espectro com toque duplo; exportar PNG e relatório em PDF.'],
   ['0.5', 'Nova interface em abas (Medir, Mapa, Dados); modo ao vivo com traços atual, média e max hold; waterfall; pico marcado e leitura ao tocar no gráfico; legenda de cores com limites; reconecta sem pedir para escolher o aparelho de novo.'],
   ['0.4', 'Tela de Ajuda, aviso de espectro plano (antena), indicador online/offline.'],
@@ -92,24 +92,33 @@ $('device').onchange = () => { selectDevice(); saveSettings(); };
 function params() {
   return {
     startMHz: +$('fStart').value, stopMHz: +$('fStop').value, points: Math.max(2, Math.min(450, +$('pts').value | 0)), average: Math.max(1, +$('avg').value | 0),
-    rbw: $('rbw').value, att: $('att').value, offset: +$('offset').value || 0,
+    input: $('inp').value, rbw: $('rbw').value, att: $('att').value, offset: +$('offset').value || 0,
     chMHz: $('chF').value === '' ? null : +$('chF').value, chBwKHz: +$('chBw').value || 25,
   };
 }
-const PARAM_IDS = [['startMHz', 'fStart'], ['stopMHz', 'fStop'], ['points', 'pts'], ['average', 'avg'], ['rbw', 'rbw'], ['att', 'att'], ['offset', 'offset'], ['chMHz', 'chF'], ['chBwKHz', 'chBw']];
+const PARAM_IDS = [['startMHz', 'fStart'], ['stopMHz', 'fStop'], ['points', 'pts'], ['average', 'avg'], ['input', 'inp'], ['rbw', 'rbw'], ['att', 'att'], ['offset', 'offset'], ['chMHz', 'chF'], ['chBwKHz', 'chBw']];
 function setParams(p) { for (const [k, id] of PARAM_IDS) if (p[k] !== undefined) $(id).value = p[k] ?? ''; syncPreset(); checkParams(); }
 function checkParams() {
   const p = params(), c = state.device.check(p);
   $('hint').textContent = c.hint; $('hint').className = 'status ' + (c.ok ? '' : 'bad');
   const name = $('preset').selectedOptions[0]?.value ? $('preset').selectedOptions[0].text : `${p.startMHz}–${p.stopMHz} MHz`;
-  $('sweepSummary').textContent = name;
+  $('sweepSummary').textContent = name + (c.input ? ' · ' + c.input.toUpperCase() : '');
+  showInput(c.input);
   return c.ok;
+}
+// Selo LOW/HIGH no espectro: qual conector o TinySA está usando nesta faixa
+function showInput(inp) {
+  const b = $('inBadge');
+  b.textContent = inp ? inp.toUpperCase() : '—';
+  b.className = 'inbadge ' + (inp || '');
+  b.title = inp ? `Antena no conector ${inp.toUpperCase()}` : 'Faixa inválida';
 }
 function syncPreset() {
   const v = `${+$('fStart').value},${+$('fStop').value}`;
   $('preset').value = [...$('preset').options].some(o => o.value === v) ? v : '';
 }
 $('preset').onchange = () => { const v = $('preset').value; if (!v) return; [$('fStart').value, $('fStop').value] = v.split(','); checkParams(); saveSettings(); };
+$('inp').addEventListener('change', () => { checkParams(); saveSettings(); });
 for (const id of ['fStart', 'fStop', 'pts', 'avg', 'rbw', 'att', 'offset', 'chF', 'chBw']) $(id).addEventListener('input', () => { syncPreset(); checkParams(); saveSettings(); drawSpectrum(); });
 $('preset').addEventListener('change', () => { state.zoomStack = []; $('btnZoomBack').disabled = true; });
 
@@ -168,6 +177,49 @@ $('btnConnect').onclick = async () => {
     $('connText').textContent = 'erro ao conectar'; setStatus(e.message, 'bad'); log('falha ao conectar: ' + e.message);
   }
 };
+// Descobre em qual conector está a antena: varre uma faixa com sinais fortes em cada entrada
+// (FM no LOW, GSM/LTE 900 no HIGH) e compara o quanto os picos sobem acima do ruído.
+const PROBE = { low: [88, 108], high: [880, 960] };
+const prominence = d => { const s = [...d].sort((a, b) => a - b); return s.at(-1) - s[s.length >> 1]; };
+async function probePort(inp) {
+  const [a, b] = PROBE[inp];
+  const s = await withDevice(() => state.device.sweep({ startMHz: a, stopMHz: b, points: 145, rbw: 'auto', att: 'auto', input: inp }, { pos: state.pos }));
+  const pr = prominence(s.dbm);
+  log(`teste ${inp.toUpperCase()} ${a}–${b} MHz: pico ${Math.max(...s.dbm).toFixed(1)} dBm, ${pr.toFixed(1)} dB acima do ruído`);
+  return pr;
+}
+// Alerta de conector errado: se a faixa medida fica plana em duas varreduras seguidas, testa uma vez o outro
+// conector; se lá houver sinal, a antena provavelmente está nele.
+const portWatch = { flat: 0, probedKey: null };
+async function checkPort(p, s) {
+  if (!s.input) { hidePortAlert(); return; }
+  if (!flatHint(s.dbm, s.input)) { portWatch.flat = 0; portWatch.probedKey = null; hidePortAlert(); return; }
+  if (++portWatch.flat < 2) return;
+  const key = traceKey(p) + s.input, here = s.input.toUpperCase(), other = s.input === 'low' ? 'high' : 'low', OTHER = other.toUpperCase();
+  if (portWatch.probedKey === key) return;
+  portWatch.probedKey = key;
+  let pr = 0;
+  try { pr = await probePort(other); } catch (e) { log('teste do outro conector: ' + e.message); }
+  if (pr >= 10) showPortAlert(`A antena parece estar no conector <b>${OTHER}</b>, mas esta faixa é medida pelo <b>${here}</b>. Passe a antena para o ${here}, ou use uma faixa ${other === 'high' ? 'de 240 a 960 MHz' : 'abaixo de 350 MHz'}.`);
+  else showPortAlert(`Sem sinal no conector <b>${here}</b>. Confira se a antena está ligada no ${here}.`);
+}
+function showPortAlert(html) {
+  const el = $('portAlert'), was = !el.hidden;
+  el.innerHTML = '⚠ ' + html; el.hidden = false;
+  if (!was) { log('alerta: ' + el.textContent); if (navigator.vibrate) navigator.vibrate([200, 100, 200]); }
+}
+function hidePortAlert() { $('portAlert').hidden = true; }
+$('btnWhichPort').onclick = async () => {
+  if (!state.connected) { setStatus('Conecte o TinySA antes.', 'bad'); return; }
+  $('btnWhichPort').disabled = true; setStatus('Testando os conectores LOW e HIGH…');
+  try {
+    const low = await probePort('low'), high = await probePort('high'), txt = `LOW ${low.toFixed(0)} dB, HIGH ${high.toFixed(0)} dB acima do ruído`;
+    if (low < 8 && high < 8) setStatus(`Nenhum conector com sinal claro (${txt}). Confira a antena.`, 'warn');
+    else if (Math.abs(low - high) < 6) setStatus(`Os dois conectores têm sinal (${txt}).`);
+    else { const p = low > high ? 'LOW' : 'HIGH'; setStatus(`A antena parece estar no conector ${p} (${txt}).`, 'ok'); }
+  } catch (e) { setStatus('Teste falhou: ' + e.message, 'bad'); log('teste de conector: ' + e.message); }
+  $('btnWhichPort').disabled = false;
+};
 // Reinicia o aparelho (comando reset) e reconecta sem pedir permissão de novo
 $('btnReboot').onclick = async () => {
   if (!confirm('Reiniciar o TinySA? Leva uns 10 segundos e ele reconecta sozinho.')) return;
@@ -190,7 +242,7 @@ $('btnDisconnect').onclick = async () => {
 
 // ---------- Traços (atual, média, max hold) e waterfall ----------
 function traceKey(p) { return `${p.startMHz}|${p.stopMHz}|${p.points}`; }
-function resetTrace() { state.trace = null; state.wf = []; state.cursor = null; drawSpectrum(); drawWaterfall(); }
+function resetTrace() { portWatch.flat = 0; portWatch.probedKey = null; hidePortAlert(); state.trace = null; state.wf = []; state.cursor = null; drawSpectrum(); drawWaterfall(); }
 $('btnResetMax').onclick = () => { if (state.trace) { state.trace.max = state.trace.cur.slice(); state.trace.avgLin = state.trace.cur.map(v => 10 ** (v / 10)); state.trace.n = 1; state.trace.avg = state.trace.cur.slice(); } drawSpectrum(); };
 
 function addSweep(p, s) {
@@ -239,6 +291,7 @@ async function liveLoop() {
     try {
       const s = await sweepOnce(p);
       addSweep(p, s);
+      await checkPort(p, s);
       $('sweepRate').textContent = `${((performance.now() - t0) / 1000).toFixed(1)} s/varredura`;
     } catch (e) { log('ao vivo: ' + e.message); setStatus('Ao vivo parou: ' + e.message, 'bad'); setLive(false); }
   }
@@ -309,6 +362,7 @@ async function capture() {
     rec.label ||= 'P' + rec.id;
     state.points.push(rec);
     setStatus(`${rec.label}: pico ${m.max.toFixed(1)} dBm em ${(m.fmax / 1e6).toFixed(3)} MHz`);
+    checkPort(prm, { dbm, input: rec.input });
     const flat = flatHint(dbm, rec.input);
     if (flat) { setStatus($('capStatus').textContent + ' — ' + flat, 'warn'); log('aviso: ' + flat); }
     if (navigator.vibrate) navigator.vibrate(80);

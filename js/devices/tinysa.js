@@ -21,11 +21,13 @@ const BANDS = [
   ['GSM/LTE 900 MHz (B8) 880–960 MHz', 880, 960],
 ];
 
-function inputFor(startMHz, stopMHz) {
+// Conector usado: escolhido pela faixa, ou forçado (na sobreposição 240–350 MHz os dois servem)
+function inputFor(startMHz, stopMHz, forced = 'auto') {
   if (!(startMHz >= 0.1) || !(stopMHz <= 960) || stopMHz <= startMHz) return null;
-  if (stopMHz <= 350) return 'low';
-  if (startMHz >= 240) return 'high';
-  return null;
+  const low = stopMHz <= 350, high = startMHz >= 240;
+  if (forced === 'low') return low ? 'low' : null;
+  if (forced === 'high') return high ? 'high' : null;
+  return low ? 'low' : high ? 'high' : null;
 }
 
 const base = {
@@ -33,10 +35,11 @@ const base = {
   bands: BANDS,
   defaults: { startMHz: 88, stopMHz: 108, points: 290, average: 3 },
   // Devolve { ok, hint } para mostrar ao usuário antes da coleta
-  check({ startMHz, stopMHz }) {
-    const m = inputFor(startMHz, stopMHz);
-    if (m === 'low') return { ok: true, hint: 'Entrada LOW: antena no conector LOW.' };
-    if (m === 'high') return { ok: true, hint: 'Entrada HIGH: antena no conector HIGH.' };
+  check({ startMHz, stopMHz, input = 'auto' }) {
+    const m = inputFor(startMHz, stopMHz, input);
+    if (m === 'low') return { ok: true, input: m, hint: 'Entrada LOW: antena no conector LOW.' };
+    if (m === 'high') return { ok: true, input: m, hint: 'Entrada HIGH: antena no conector HIGH.' };
+    if (input !== 'auto' && inputFor(startMHz, stopMHz)) return { ok: false, hint: `O conector ${input.toUpperCase()} não cobre esta faixa (LOW: 0,1–350 MHz, HIGH: 240–960 MHz).` };
     return { ok: false, hint: 'Faixa inválida para o Basic: use 0,1–350 MHz (LOW) ou 240–960 MHz (HIGH).' };
   },
 };
@@ -83,8 +86,8 @@ export const tinysa = {
     return this._reopen(20000);
   },
   // rbw: 'auto' ou kHz; att: 'auto' ou dB (comandos "rbw" e "attenuate" do TinySA)
-  async sweep({ startMHz, stopMHz, points, rbw = 'auto', att = 'auto' }) {
-    const mode = inputFor(startMHz, stopMHz);
+  async sweep({ startMHz, stopMHz, points, rbw = 'auto', att = 'auto', input = 'auto' }) {
+    const mode = inputFor(startMHz, stopMHz, input);
     if (this.input !== mode) { await this.ch.cmd(`mode ${mode} input`); this.input = mode; this.rbw = this.att = null; }
     if (this.rbw !== String(rbw)) { await this.ch.cmd(`rbw ${rbw}`); this.rbw = String(rbw); }
     if (this.att !== String(att)) { await this.ch.cmd(`attenuate ${att}`); this.att = String(att); }
@@ -109,10 +112,12 @@ export const tinysaSim = {
   async disconnect() {},
   async recover() {},
   async reboot() { await new Promise(r => setTimeout(r, 1500)); return 'tinySA simulado (reiniciado)'; },
-  async sweep({ startMHz, stopMHz, points }, ctx = {}) {
+  async sweep({ startMHz, stopMHz, points, input = 'auto' }, ctx = {}) {
     const [x, y] = ctx.pos || [0.5, 0.5];
     const a = startMHz * 1e6, b = stopMHz * 1e6, bw = (b - a) / 120;
-    const carriers = [[a + (b - a) * 0.3, 0.2, 0.3], [a + (b - a) * 0.7, 0.8, 0.7]];
+    // para testar o alerta de conector: localStorage.simAntenna = 'low' ou 'high' deixa o outro conector sem sinal
+    let ant = null; try { ant = localStorage.simAntenna; } catch (_) {}
+    const carriers = ant && ant !== inputFor(startMHz, stopMHz, input) ? [] : [[a + (b - a) * 0.3, 0.2, 0.3], [a + (b - a) * 0.7, 0.8, 0.7]];
     const freqs = [], dbm = [];
     for (let i = 0; i < points; i++) {
       const f = a + (b - a) * i / (points - 1);
@@ -121,6 +126,6 @@ export const tinysaSim = {
       freqs.push(f); dbm.push(10 * Math.log10(lin));
     }
     await new Promise(r => setTimeout(r, 300));
-    return { freqs, dbm, input: inputFor(startMHz, stopMHz) };
+    return { freqs, dbm, input: inputFor(startMHz, stopMHz, input) };
   },
 };

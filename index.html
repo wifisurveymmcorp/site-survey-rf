@@ -78,6 +78,10 @@
   #help h3 { font-size:14px; margin:18px 0 6px; }
   #help ol, #help ul { padding-left:20px; margin:6px 0; }
   #help code { font-size:12px; background:var(--bg); padding:1px 4px; border-radius:4px; }
+  .alert { background:var(--bad); color:#fff; border-radius:8px; padding:8px 10px; margin:4px 0 8px; font-size:14px; font-weight:600; }
+  .inbadge { font:700 12px system-ui; padding:2px 8px; border-radius:6px; margin-left:6px; background:var(--line); color:var(--fg); letter-spacing:.5px; vertical-align:middle; }
+  .inbadge.low { background:#1f6feb; color:#fff; }
+  .inbadge.high { background:#c2410c; color:#fff; }
   .pill { font-size:11px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); white-space:nowrap; }
   .pill.off { color:var(--warn); border-color:var(--warn); }
 </style>
@@ -107,6 +111,7 @@
         <button id="btnConnect">Conectar</button>
         <button id="btnDisconnect" class="sec" disabled>Desconectar</button>
         <button id="btnReboot" class="sec" disabled title="Envia o comando reset e reconecta">Reiniciar TinySA</button>
+        <button id="btnWhichPort" class="sec" title="Varre FM no LOW e 900 MHz no HIGH e compara">Qual conector?</button>
       </div>
     </section>
 
@@ -124,6 +129,8 @@
           <div><label>Início (MHz)</label><input id="fStart" type="number" inputmode="decimal" step="any"></div>
           <div><label>Fim (MHz)</label><input id="fStop" type="number" inputmode="decimal" step="any"></div>
         </div>
+        <label>Conector da antena</label>
+        <select id="inp"><option value="auto">Automático pela faixa (LOW até 350 MHz, HIGH acima)</option><option value="low">LOW (0,1–350 MHz)</option><option value="high">HIGH (240–960 MHz)</option></select>
         <div class="row">
           <div><label>Pontos</label><input id="pts" type="number" inputmode="numeric"></div>
           <div><label>Leituras na coleta (média)</label><input id="avg" type="number" inputmode="numeric" min="1"></div>
@@ -145,11 +152,12 @@
     </section>
 
     <section class="wide">
-      <h2><span class="grow">Espectro</span>
+      <h2><span class="grow">Espectro <span id="inBadge" class="inbadge">—</span></span>
         <button id="btnLive" class="sec small toggle" disabled>Ao vivo</button>
         <button id="btnResetMax" class="sec small">Zerar max</button>
         <button id="btnZoomBack" class="sec small" disabled title="Voltar à faixa anterior">↺</button>
       </h2>
+      <div id="portAlert" class="alert" hidden></div>
       <canvas id="spec"></canvas>
       <div class="legend">
         <span><i style="background:var(--tr-live)"></i>Atual</span>
@@ -290,6 +298,9 @@
       <li><b>Max hold</b> (laranja): o maior valor visto em cada frequência. Pega sinais que aparecem e somem, como rádios TETRA e DMR. <b>Zerar max</b> recomeça.</li>
       <li><b>Waterfall</b>: cada linha é uma varredura, a mais nova em cima; mostra quando cada canal transmite.</li>
     </ul>
+
+    <h3>Conector LOW ou HIGH</h3>
+    <p>O selo azul <b>LOW</b> ou laranja <b>HIGH</b> ao lado de "Espectro" mostra qual conector o TinySA está lendo. Por padrão ele escolhe pela faixa; entre 240 e 350 MHz os dois servem, e você pode forçar em <b>Varredura → Conector da antena</b>. O app não consegue ver fisicamente onde a antena está ligada, mas o botão <b>Qual conector?</b> (em Dispositivo) varre FM no LOW e 900 MHz no HIGH e diz qual dos dois recebe sinal. Se a faixa que você está medindo ficar sem sinal, o app testa sozinho o outro conector e mostra um <b>alerta vermelho</b> (com vibração) quando a antena parece estar no conector errado.</p>
 
     <h3>Tela apagando</h3>
     <p>Com o app aberto na frente, a tela fica acesa sozinha, porque se ela apagar o Android pode cortar o USB do TinySA. Se mesmo assim apagar (modo de economia de bateria), aumente o tempo em <b>Configurações → Tela → Suspensão</b> (no Xiaomi/POCO: <b>Tela de bloqueio → Suspender</b>).</p>
