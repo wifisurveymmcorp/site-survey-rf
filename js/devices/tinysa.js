@@ -49,14 +49,17 @@ export const tinysa = {
     this.t = pickTransport(prefer, 115200, USB_FILTERS);
     await this.t.open();
     this.ch = new LineChannel(this.t, 'ch> ', log);
-    this.input = null;
+    this.input = null; this.rbw = null; this.att = null;
     await this.ch.drain(); // limpa o que estiver no buffer antes do primeiro comando
     return (await this.ch.cmd('version')).trim().split(/\r?\n/)[0];
   },
   async disconnect() { await this.t?.close(); },
-  async sweep({ startMHz, stopMHz, points }) {
+  // rbw: 'auto' ou kHz; att: 'auto' ou dB (comandos "rbw" e "attenuate" do TinySA)
+  async sweep({ startMHz, stopMHz, points, rbw = 'auto', att = 'auto' }) {
     const mode = inputFor(startMHz, stopMHz);
-    if (this.input !== mode) { await this.ch.cmd(`mode ${mode} input`); this.input = mode; }
+    if (this.input !== mode) { await this.ch.cmd(`mode ${mode} input`); this.input = mode; this.rbw = this.att = null; }
+    if (this.rbw !== String(rbw)) { await this.ch.cmd(`rbw ${rbw}`); this.rbw = String(rbw); }
+    if (this.att !== String(att)) { await this.ch.cmd(`attenuate ${att}`); this.att = String(att); }
     const out = await this.ch.cmd(`scan ${Math.round(startMHz * 1e6)} ${Math.round(stopMHz * 1e6)} ${points} 3`, 60000);
     const freqs = [], dbm = [];
     for (const l of out.split(/\r?\n/)) {

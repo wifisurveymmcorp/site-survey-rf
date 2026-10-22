@@ -107,6 +107,11 @@
     <section>
       <details id="cfgSweep" class="cfg" open>
         <summary>Varredura <span id="sweepSummary" class="summary-line"></span></summary>
+        <div class="row" style="grid-template-columns:1fr auto auto;align-items:end">
+          <div><label>Perfil salvo</label><select id="profile"><option value="">—</option></select></div>
+          <button id="btnProfSave" class="sec small" style="min-height:44px">Salvar</button>
+          <button id="btnProfDel" class="sec small" style="min-height:44px">Excluir</button>
+        </div>
         <label>Faixa pronta</label>
         <select id="preset"></select>
         <div class="row">
@@ -117,6 +122,18 @@
           <div><label>Pontos</label><input id="pts" type="number" inputmode="numeric"></div>
           <div><label>Leituras na coleta (média)</label><input id="avg" type="number" inputmode="numeric" min="1"></div>
         </div>
+        <div class="row">
+          <div><label>Canal de interesse (MHz)</label><input id="chF" type="number" inputmode="decimal" step="any" placeholder="opcional"></div>
+          <div><label>Largura do canal (kHz)</label><input id="chBw" type="number" inputmode="decimal" step="any" placeholder="25"></div>
+        </div>
+        <details style="margin-top:10px"><summary>Avançado</summary>
+          <div class="row3">
+            <div><label>RBW</label><select id="rbw"><option value="auto">auto</option><option>3</option><option>10</option><option>30</option><option>100</option><option>300</option><option>600</option></select></div>
+            <div><label>Atenuação</label><select id="att"><option value="auto">auto</option><option>0</option><option>10</option><option>20</option><option>30</option></select></div>
+            <div><label>Offset (dB)</label><input id="offset" type="number" inputmode="decimal" step="any" placeholder="0"></div>
+          </div>
+          <div class="status" style="margin-top:6px">RBW em kHz. Offset soma ao valor medido: use para compensar ganho de antena ou perda de cabo.</div>
+        </details>
       </details>
       <div id="hint" class="status" style="margin-top:8px"></div>
     </section>
@@ -125,6 +142,7 @@
       <h2><span class="grow">Espectro</span>
         <button id="btnLive" class="sec small toggle" disabled>Ao vivo</button>
         <button id="btnResetMax" class="sec small">Zerar max</button>
+        <button id="btnZoomBack" class="sec small" disabled title="Voltar à faixa anterior">↺</button>
       </h2>
       <canvas id="spec"></canvas>
       <div class="legend">
@@ -134,6 +152,7 @@
         <span id="sweepRate"></span>
       </div>
       <div id="readout" class="status"></div>
+      <div class="status">Toque duplo no gráfico aproxima naquela frequência; ↺ volta.</div>
       <canvas id="wf"></canvas>
       <div class="status">Waterfall: cada linha é uma varredura, a mais nova em cima.</div>
     </section>
@@ -146,6 +165,7 @@
         <div><label>GPS</label><input id="gps" readonly placeholder="toque para pegar"></div>
       </div>
       <label class="chk"><input id="autoGps" type="checkbox"> Pegar GPS automaticamente em cada coleta</label>
+      <label class="chk"><input id="autoCap" type="checkbox"> Coleta automática a cada <input id="autoSec" type="number" inputmode="numeric" value="10" min="2" style="width:70px;min-height:34px;padding:4px 6px"> s (andando)</label>
     </section>
   </div>
 
@@ -158,8 +178,10 @@
             <option value="max">Pico na faixa (dBm)</option>
             <option value="mean">Média na faixa (dBm)</option>
             <option value="chpow">Potência integrada (dBm)</option>
+            <option value="ch">Canal de interesse (dBm)</option>
           </select></div>
-        <div><label>Imagem da planta</label><input id="planFile" type="file" accept="image/*"></div>
+        <div><label>Visão</label>
+          <select id="mapView"><option value="plan">Planta</option><option value="gps">GPS (mapa de rua)</option></select></div>
       </div>
       <div class="row">
         <div><label>Fraco ≤ (dBm, vazio = automático)</label><input id="lo" type="number" inputmode="decimal" step="any" placeholder="auto"></div>
@@ -168,10 +190,21 @@
       <div class="colorbar"></div>
       <div class="colorbar-labels"><span id="loLbl"></span><span>fraco → forte</span><span id="hiLbl"></span></div>
     </section>
-    <section>
-      <h2>Toque na planta onde você está</h2>
+    <section id="planBox">
+      <div class="row" style="grid-template-columns:1fr auto auto;align-items:end">
+        <div><label>Andar</label><select id="floor"></select></div>
+        <button id="btnFloorAdd" class="sec small" style="min-height:44px">+ Andar</button>
+        <button id="btnScale" class="sec small" style="min-height:44px">Escala</button>
+      </div>
+      <label>Imagem da planta deste andar</label><input id="planFile" type="file" accept="image/*">
+      <h2 style="margin-top:12px">Toque na planta onde você está</h2>
       <canvas id="plan" width="900" height="560"></canvas>
-      <div class="status" style="margin-top:6px">Pontos só com GPS (sem toque na planta) aparecem na aba Dados.</div>
+      <div id="planHint" class="status" style="margin-top:6px"></div>
+    </section>
+    <section id="gpsBox" style="display:none">
+      <h2>Pontos com GPS</h2>
+      <canvas id="gpsMap" width="900" height="700"></canvas>
+      <div class="status" style="margin-top:6px">Mapa © colaboradores do OpenStreetMap (precisa de internet; offline aparecem só os pontos).</div>
     </section>
   </div>
 
@@ -179,10 +212,15 @@
   <div id="tab-dados" class="tab">
     <section>
       <h2>Pontos coletados (<span id="count">0</span>)</h2>
-      <div class="tablewrap"><table><thead><tr><th>#</th><th>Nome</th><th>Hora</th><th>Pico dBm</th><th>Freq. pico MHz</th><th>Métrica</th><th>GPS</th><th></th></tr></thead><tbody id="tbl"></tbody></table></div>
+      <div class="tablewrap"><table><thead><tr><th>#</th><th>Nome</th><th>Hora</th><th>Pico dBm</th><th>Freq. pico MHz</th><th>Métrica</th><th>Andar</th><th>GPS</th><th></th></tr></thead><tbody id="tbl"></tbody></table></div>
       <div class="row">
         <button id="btnCsv" class="sec">Exportar CSV</button>
         <button id="btnJson" class="sec">Exportar JSON</button>
+      </div>
+      <div class="row3">
+        <button id="btnPngSpec" class="sec">PNG espectro</button>
+        <button id="btnPngMap" class="sec">PNG mapa</button>
+        <button id="btnReport">Relatório PDF</button>
       </div>
       <div class="row">
         <div><label>Abrir sessão (JSON)</label><input id="fileLoad" type="file" accept=".json,application/json"></div>
@@ -228,6 +266,30 @@
       <li><b>Média</b> (roxo): média das varreduras recentes, mais estável.</li>
       <li><b>Max hold</b> (laranja): o maior valor visto em cada frequência. Pega sinais que aparecem e somem, como rádios TETRA e DMR. <b>Zerar max</b> recomeça.</li>
       <li><b>Waterfall</b>: cada linha é uma varredura, a mais nova em cima; mostra quando cada canal transmite.</li>
+    </ul>
+
+    <h3>Recursos de medição</h3>
+    <ul>
+      <li><b>Canal de interesse</b> (Varredura): informe a frequência central e a largura (ex.: 390,0125 MHz e 25 kHz para um canal TETRA). Ele aparece em verde no gráfico e vira a métrica <i>Canal de interesse</i> no mapa.</li>
+      <li><b>Avançado</b>: RBW (resolução, em kHz), atenuação do TinySA e <b>offset</b> em dB somado às leituras (ganho de antena ou perda de cabo).</li>
+      <li><b>Perfis</b>: salve faixa, pontos, médias, canal e ajustes com um nome e carregue depois.</li>
+      <li><b>Zoom</b>: toque duplo no gráfico aproxima 4× naquela frequência; <b>↺</b> volta.</li>
+      <li><b>Coleta automática</b> (Ponto de coleta): grava um ponto a cada N segundos enquanto você anda. Combine com GPS automático para áreas externas.</li>
+    </ul>
+
+    <h3>Planta, andares e escala</h3>
+    <ul>
+      <li>Na aba <b>Mapa</b>, <b>+ Andar</b> cria outro andar, cada um com sua planta. Os pontos ficam no andar em que foram marcados.</li>
+      <li><b>Escala</b>: toque em dois pontos da planta com distância conhecida (uma parede, um corredor) e digite os metros. A posição passa a aparecer em metros e uma barra de escala é desenhada.</li>
+      <li><b>Visão GPS</b>: mostra os pontos com GPS sobre o mapa de ruas (OpenStreetMap, precisa de internet).</li>
+    </ul>
+
+    <h3>Exportar</h3>
+    <ul>
+      <li><b>CSV</b>: planilha com uma linha por ponto, inclusive andar, metros, GPS e canal.</li>
+      <li><b>JSON</b>: sessão completa (espectros, andares e escala) para reabrir no app.</li>
+      <li><b>PNG espectro / PNG mapa</b>: imagem do gráfico ou do mapa como está na tela.</li>
+      <li><b>Relatório PDF</b>: abre uma página com o mapa de cada andar, a tabela e o espectro de cada ponto; use Imprimir → Salvar como PDF.</li>
     </ul>
 
     <h3>Antena: conector LOW ou HIGH</h3>

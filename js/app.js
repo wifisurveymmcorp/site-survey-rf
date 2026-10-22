@@ -3,8 +3,9 @@ import { save, load } from './store.js';
 
 const $ = id => document.getElementById(id);
 
-const APP_VERSION = '0.5';
+const APP_VERSION = '0.6';
 const CHANGELOG = [
+  ['0.6', 'Canal de interesse como métrica do mapa; RBW, atenuação e offset; perfis salvos; coleta automática andando; vários andares e escala na planta; mapa GPS com OpenStreetMap; zoom no espectro com toque duplo; exportar PNG e relatório em PDF.'],
   ['0.5', 'Nova interface em abas (Medir, Mapa, Dados); modo ao vivo com traços atual, média e max hold; waterfall; pico marcado e leitura ao tocar no gráfico; legenda de cores com limites; reconecta sem pedir para escolher o aparelho de novo.'],
   ['0.4', 'Tela de Ajuda, aviso de espectro plano (antena), indicador online/offline.'],
   ['0.3', 'Testado com TinySA Basic real no Android: conexão por WebUSB, correção das respostas atrasadas, atualizações chegam na hora.'],
@@ -14,11 +15,13 @@ const CHANGELOG = [
 const WF_ROWS = 120;
 
 const state = {
-  device: null, connected: false, pos: null, gps: null, points: [], planImg: null, planBlob: null,
+  device: null, connected: false, pos: null, gps: null, points: [],
   live: false, busy: false,          // busy = uma varredura em andamento (ao vivo ou coleta)
   trace: null,                       // { freqs, cur, avg, max, n, startMHz, stopMHz, key }
   wf: [],                            // linhas do waterfall (dBm), a mais nova primeiro
   cursor: null,                      // índice tocado no gráfico
+  floors: [],                        // [{ id, name, scale: { mPerUnit } }]; imagens em state.planImgs
+  floor: null, planImgs: {}, scalePick: null, zoomStack: [], profiles: [],
 };
 
 // ---------- Log ----------
@@ -72,8 +75,14 @@ function selectDevice() {
 $('device').onchange = () => { selectDevice(); saveSettings(); };
 
 function params() {
-  return { startMHz: +$('fStart').value, stopMHz: +$('fStop').value, points: Math.max(2, Math.min(450, +$('pts').value | 0)), average: Math.max(1, +$('avg').value | 0) };
+  return {
+    startMHz: +$('fStart').value, stopMHz: +$('fStop').value, points: Math.max(2, Math.min(450, +$('pts').value | 0)), average: Math.max(1, +$('avg').value | 0),
+    rbw: $('rbw').value, att: $('att').value, offset: +$('offset').value || 0,
+    chMHz: $('chF').value === '' ? null : +$('chF').value, chBwKHz: +$('chBw').value || 25,
+  };
 }
+const PARAM_IDS = [['startMHz', 'fStart'], ['stopMHz', 'fStop'], ['points', 'pts'], ['average', 'avg'], ['rbw', 'rbw'], ['att', 'att'], ['offset', 'offset'], ['chMHz', 'chF'], ['chBwKHz', 'chBw']];
+function setParams(p) { for (const [k, id] of PARAM_IDS) if (p[k] !== undefined) $(id).value = p[k] ?? ''; syncPreset(); checkParams(); }
 function checkParams() {
   const p = params(), c = state.device.check(p);
   $('hint').textContent = c.hint; $('hint').className = 'status ' + (c.ok ? '' : 'bad');
@@ -86,7 +95,26 @@ function syncPreset() {
   $('preset').value = [...$('preset').options].some(o => o.value === v) ? v : '';
 }
 $('preset').onchange = () => { const v = $('preset').value; if (!v) return; [$('fStart').value, $('fStop').value] = v.split(','); checkParams(); saveSettings(); };
-for (const id of ['fStart', 'fStop', 'pts', 'avg']) $(id).addEventListener('input', () => { syncPreset(); checkParams(); saveSettings(); });
+for (const id of ['fStart', 'fStop', 'pts', 'avg', 'rbw', 'att', 'offset', 'chF', 'chBw']) $(id).addEventListener('input', () => { syncPreset(); checkParams(); saveSettings(); drawSpectrum(); });
+$('preset').addEventListener('change', () => { state.zoomStack = []; $('btnZoomBack').disabled = true; });
+
+// ---------- Perfis salvos ----------
+function showProfiles() {
+  $('profile').innerHTML = '<option value="">—</option>' + state.profiles.map((p, i) => `<option value="${i}">${esc(p.name)}</option>`).join('');
+}
+$('profile').onchange = () => { const p = state.profiles[+$('profile').value]; if (p) { setParams(p); saveSettings(); setStatus('Perfil "' + p.name + '" carregado.'); } };
+$('btnProfSave').onclick = async () => {
+  const cur = state.profiles[+$('profile').value];
+  const name = prompt('Nome do perfil:', cur?.name || $('sweepSummary').textContent);
+  if (!name) return;
+  const i = state.profiles.findIndex(p => p.name === name), p = { name, ...params() };
+  if (i >= 0) state.profiles[i] = p; else state.profiles.push(p);
+  await save('profiles', state.profiles); showProfiles(); $('profile').value = state.profiles.findIndex(x => x.name === name);
+};
+$('btnProfDel').onclick = async () => {
+  const i = +$('profile').value; if ($('profile').value === '' || !confirm('Excluir o perfil "' + state.profiles[i].name + '"?')) return;
+  state.profiles.splice(i, 1); await save('profiles', state.profiles); showProfiles();
+};
 
 let wakeLock = null;
 async function keepAwake(on) {
@@ -120,7 +148,7 @@ $('btnConnect').onclick = async () => {
   }
 };
 $('btnDisconnect').onclick = async () => {
-  setLive(false);
+  setLive(false); $('autoCap').checked = false;
   while (state.busy) await new Promise(r => setTimeout(r, 100));
   await state.device.disconnect();
   setConnected(false, 'desconectado'); keepAwake(false);
@@ -153,7 +181,11 @@ function addSweep(p, s) {
 async function sweepOnce(p) {
   while (state.busy) await new Promise(r => setTimeout(r, 50));
   state.busy = true;
-  try { return await state.device.sweep(p, { pos: state.pos }); }
+  try {
+    const s = await state.device.sweep(p, { pos: state.pos });
+    if (p.offset) s.dbm = s.dbm.map(v => v + p.offset);
+    return s;
+  }
   finally { state.busy = false; }
 }
 
@@ -192,14 +224,25 @@ $('gps').onclick = async () => { state.gps = await getGps(); showGps(); };
 $('autoGps').onchange = saveSettings;
 
 // ---------- Coleta ----------
-function metrics(f, p) {
+function metrics(f, p, prm = {}) {
   let iMax = 0; for (let i = 1; i < p.length; i++) if (p[i] > p[iMax]) iMax = i;
   const sum = p.reduce((a, v) => a + Math.pow(10, v / 10), 0);
-  return { max: p[iMax], fmax: f[iMax], mean: 10 * Math.log10(sum / p.length), chpow: 10 * Math.log10(sum) };
+  const m = { max: p[iMax], fmax: f[iMax], mean: 10 * Math.log10(sum / p.length), chpow: 10 * Math.log10(sum), ch: null };
+  // canal de interesse: potência somada dos pontos dentro da largura; se o canal for mais estreito que um ponto, o ponto mais próximo
+  if (prm.chMHz != null) {
+    const c = prm.chMHz * 1e6, half = prm.chBwKHz * 500;
+    let lin = 0, n = 0, near = 0;
+    f.forEach((fr, i) => { if (Math.abs(fr - c) <= half) { lin += 10 ** (p[i] / 10); n++; } if (Math.abs(fr - c) < Math.abs(f[near] - c)) near = i; });
+    if (c >= f[0] && c <= f.at(-1)) m.ch = n ? 10 * Math.log10(lin) : p[near];
+  }
+  return m;
 }
+const metricVal = (p, key) => p[key] ?? null;
 
-$('btnCapture').onclick = async () => {
+$('btnCapture').onclick = () => capture();
+async function capture() {
   if (!checkParams()) { setStatus('Ajuste a faixa antes de coletar.', 'bad'); return; }
+  if (capturing) return;
   const prm = params();
   $('btnCapture').disabled = true; capturing = true;
   try {
@@ -216,10 +259,10 @@ $('btnCapture').onclick = async () => {
     }
     const dbm = acc.map(v => 10 * Math.log10(v / prm.average));
     state.gps = await gpsP; showGps();
-    const m = metrics(freqs, dbm);
+    const m = metrics(freqs, dbm, prm);
     const rec = {
       id: (state.points.at(-1)?.id || 0) + 1, label: $('label').value.trim(), time: new Date().toISOString(),
-      device: state.device.id, input, pos: state.pos, gps: state.gps, ...prm, freqs, dbm, maxhold: maxHold, ...m,
+      device: state.device.id, input, pos: state.pos, floor: state.pos ? state.floor : null, xm: toMeters(state.pos)?.[0], ym: toMeters(state.pos)?.[1], gps: state.gps, ...prm, freqs, dbm, maxhold: maxHold, ...m,
     };
     rec.label ||= 'P' + rec.id;
     state.points.push(rec);
@@ -233,7 +276,19 @@ $('btnCapture').onclick = async () => {
   } catch (e) { setStatus('Erro: ' + e.message, 'bad'); log('erro na coleta: ' + e.message); }
   capturing = false;
   $('btnCapture').disabled = !state.connected;
-};
+}
+
+// Coleta automática: um ponto a cada N segundos enquanto a opção estiver marcada
+let autoTimer = null;
+async function autoLoop() {
+  while ($('autoCap').checked && state.connected) {
+    const t0 = Date.now();
+    await capture();
+    const wait = Math.max(0, Math.max(2, +$('autoSec').value || 10) * 1000 - (Date.now() - t0));
+    await new Promise(r => { autoTimer = setTimeout(r, wait); });
+  }
+}
+$('autoCap').onchange = () => { clearTimeout(autoTimer); if ($('autoCap').checked) { if (!state.connected) { $('autoCap').checked = false; setStatus('Conecte o dispositivo antes.', 'bad'); return; } autoLoop(); } };
 
 // ---------- Desenho ----------
 const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -273,6 +328,15 @@ function drawSpectrum() {
     g.fillText((f / 1e6).toFixed(step < 1e6 ? 1 : 0), X(f), h - 8);
   }
   g.textAlign = 'left'; g.fillText('dBm', 4, 12); g.textAlign = 'right'; g.fillText('MHz', w - P.r, h - 8 - 12);
+  // canal de interesse
+  const prm = params();
+  if (prm.chMHz != null) {
+    const c = prm.chMHz * 1e6, half = Math.max(prm.chBwKHz * 500, (f1 - f0) / t.freqs.length / 2);
+    if (c + half >= f0 && c - half <= f1) {
+      g.fillStyle = 'rgba(46,160,67,.18)'; g.fillRect(X(Math.max(f0, c - half)), P.t, Math.max(2, X(Math.min(f1, c + half)) - X(Math.max(f0, c - half))), h - P.t - P.b);
+      g.fillStyle = css('--ok'); g.font = '600 11px system-ui'; g.textAlign = 'center'; g.fillText('canal', X(c), P.t + 12); g.font = '11px system-ui';
+    }
+  }
   // traços
   const line = (arr, color, width) => { g.strokeStyle = color; g.lineWidth = width; g.beginPath(); arr.forEach((v, i) => i ? g.lineTo(X(t.freqs[i]), Y(v)) : g.moveTo(X(t.freqs[i]), Y(v))); g.stroke(); };
   line(t.max, css('--tr-max'), 1.2);
@@ -298,6 +362,27 @@ function specIndexAt(clientX) {
   return Math.max(0, Math.min(t.freqs.length - 1, Math.round(frac * (t.freqs.length - 1))));
 }
 $('spec').addEventListener('pointerdown', e => { state.cursor = specIndexAt(e.clientX); drawSpectrum(); $('spec').setPointerCapture(e.pointerId); });
+// Toque duplo: aproxima 4x em torno da frequência tocada (respeitando os limites do dispositivo)
+let lastTap = 0;
+$('spec').addEventListener('pointerup', e => {
+  const now = Date.now();
+  if (now - lastTap < 350 && state.trace) zoomAt(state.trace.freqs[specIndexAt(e.clientX)] / 1e6);
+  lastTap = now;
+});
+function zoomAt(fMHz) {
+  const p = params(), span = (p.stopMHz - p.startMHz) / 4;
+  if (span < 0.05) return;
+  let a = fMHz - span / 2, b = fMHz + span / 2;
+  for (const [lo, hi] of [[0.1, 350], [240, 960]]) if (p.startMHz >= lo && p.stopMHz <= hi) { if (a < lo) { b += lo - a; a = lo; } if (b > hi) { a -= b - hi; b = hi; } }
+  state.zoomStack.push([p.startMHz, p.stopMHz]); $('btnZoomBack').disabled = false;
+  setParams({ startMHz: +a.toFixed(3), stopMHz: +b.toFixed(3) }); saveSettings();
+  setStatus(`Zoom: ${a.toFixed(3)}–${b.toFixed(3)} MHz`);
+}
+$('btnZoomBack').onclick = () => {
+  const z = state.zoomStack.pop(); if (!z) return;
+  setParams({ startMHz: z[0], stopMHz: z[1] }); saveSettings();
+  $('btnZoomBack').disabled = !state.zoomStack.length;
+};
 $('spec').addEventListener('pointermove', e => { if (e.buttons) { state.cursor = specIndexAt(e.clientX); drawSpectrum(); } });
 
 const heat = (t, a) => `hsla(${(1 - Math.max(0, Math.min(1, t))) * 240},85%,50%,${a})`;
@@ -327,106 +412,258 @@ function scaleRange(vals) {
   const hi = $('hi').value === '' ? Math.max(...vals) : +$('hi').value;
   return [lo, hi > lo ? hi : lo + 1];
 }
+const fmtV = v => v == null ? '—' : v.toFixed(1);
+function colorLabels(vals) {
+  const [lo, hi] = vals.length ? scaleRange(vals) : [NaN, NaN];
+  $('loLbl').textContent = isFinite(lo) ? lo.toFixed(0) + ' dBm' : ''; $('hiLbl').textContent = isFinite(hi) ? hi.toFixed(0) + ' dBm' : '';
+  return [lo, hi];
+}
+function drawMarker(g, x, y, val, label, lo, span) {
+  g.fillStyle = val == null ? '#888' : heat((val - lo) / span, 1); g.beginPath(); g.arc(x, y, 11, 0, 7); g.fill();
+  g.strokeStyle = '#000'; g.lineWidth = 2; g.stroke();
+  const t = `${label} ${fmtV(val)}`;
+  g.font = 'bold 20px system-ui'; g.lineWidth = 4; g.strokeStyle = '#fff'; g.strokeText(t, x + 14, y - 8); g.fillStyle = '#000'; g.fillText(t, x + 14, y - 8);
+}
+
+// ---------- Andares e planta ----------
+const curFloor = () => state.floors.find(f => f.id === state.floor);
+function showFloors() {
+  $('floor').innerHTML = state.floors.map(f => `<option value="${f.id}">${esc(f.name)}</option>`).join('');
+  $('floor').value = state.floor;
+}
+async function saveFloors() { await save('floors', state.floors.map(({ id, name, scale }) => ({ id, name, scale }))); await save('floorCur', state.floor); }
+$('floor').onchange = () => { state.floor = +$('floor').value; state.pos = null; $('xy').value = ''; sizePlan(); drawPlan(); saveFloors(); };
+$('btnFloorAdd').onclick = async () => {
+  const name = prompt('Nome do andar:', `Andar ${state.floors.length + 1}`); if (!name) return;
+  const id = Math.max(0, ...state.floors.map(f => f.id)) + 1;
+  state.floors.push({ id, name, scale: null }); state.floor = id; state.pos = null; $('xy').value = '';
+  showFloors(); sizePlan(); drawPlan(); await saveFloors();
+};
+// Escala: dois toques na planta + distância real em metros
+$('btnScale').onclick = () => { state.scalePick = []; setStatus('Escala: toque em dois pontos da planta com distância conhecida.'); drawPlan(); };
+function planDist(a, b) { const c = $('plan'); return Math.hypot((a[0] - b[0]) * c.width, (a[1] - b[1]) * c.height) / c.width; }
+function toMeters(pos) { const sc = curFloor()?.scale; if (!sc || !pos) return null; const c = $('plan'); return [pos[0] * sc.mPerUnit, pos[1] * c.height / c.width * sc.mPerUnit]; }
+
+function sizePlan() { const img = state.planImgs[state.floor]; $('plan').height = img ? Math.round($('plan').width * img.height / img.width) : 560; }
 function drawPlan() {
   const c = $('plan'); if (!c.offsetParent) return;
   const g = c.getContext('2d'), W = c.width, H = c.height;
   g.clearRect(0, 0, W, H);
-  if (state.planImg) g.drawImage(state.planImg, 0, 0, W, H);
-  else { g.fillStyle = css('--muted'); g.font = '22px system-ui'; g.fillText('Carregue a planta ou toque aqui para marcar a posição.', 20, 40); }
-  const key = $('metric').value, pts = state.points.filter(p => p.pos);
-  const [lo, hi] = pts.length ? scaleRange(pts.map(p => p[key])) : [NaN, NaN];
-  $('loLbl').textContent = isFinite(lo) ? lo.toFixed(0) + ' dBm' : ''; $('hiLbl').textContent = isFinite(hi) ? hi.toFixed(0) + ' dBm' : '';
-  if (pts.length) {
-    const span = hi - lo;
-    if (pts.length >= 3) { // interpolação IDW
-      const step = 14;
-      for (let y = 0; y < H; y += step) for (let x = 0; x < W; x += step) {
-        let num = 0, den = 0;
-        for (const p of pts) { const w = 1 / ((x - p.pos[0] * W) ** 2 + (y - p.pos[1] * H) ** 2 + 1); num += w * p[key]; den += w; }
-        g.fillStyle = heat((num / den - lo) / span, 0.35); g.fillRect(x, y, step, step);
-      }
-    }
-    g.font = 'bold 20px system-ui';
-    for (const p of pts) {
-      const x = p.pos[0] * W, y = p.pos[1] * H;
-      g.fillStyle = heat((p[key] - lo) / span, 1); g.beginPath(); g.arc(x, y, 11, 0, 7); g.fill();
-      g.strokeStyle = '#000'; g.lineWidth = 2; g.stroke();
-      const t = `${p.label} ${p[key].toFixed(1)}`;
-      g.lineWidth = 4; g.strokeStyle = '#fff'; g.strokeText(t, x + 14, y - 8); g.fillStyle = '#000'; g.fillText(t, x + 14, y - 8);
+  const img = state.planImgs[state.floor];
+  if (img) g.drawImage(img, 0, 0, W, H);
+  else { g.fillStyle = css('--muted'); g.font = '22px system-ui'; g.fillText('Carregue a planta deste andar ou toque aqui para marcar a posição.', 20, 40); }
+  const key = $('metric').value, pts = state.points.filter(p => p.pos && (p.floor ?? state.floors[0]?.id) === state.floor && metricVal(p, key) != null);
+  const [lo, hi] = colorLabels(pts.map(p => p[key])), span = hi - lo;
+  if (pts.length >= 3) { // interpolação IDW
+    const step = 14;
+    for (let y = 0; y < H; y += step) for (let x = 0; x < W; x += step) {
+      let num = 0, den = 0;
+      for (const p of pts) { const w = 1 / ((x - p.pos[0] * W) ** 2 + (y - p.pos[1] * H) ** 2 + 1); num += w * p[key]; den += w; }
+      g.fillStyle = heat((num / den - lo) / span, 0.35); g.fillRect(x, y, step, step);
     }
   }
+  for (const p of pts) drawMarker(g, p.pos[0] * W, p.pos[1] * H, p[key], p.label, lo, span);
   if (state.pos) { const x = state.pos[0] * W, y = state.pos[1] * H; g.strokeStyle = '#000'; g.lineWidth = 3; g.strokeRect(x - 14, y - 14, 28, 28); }
+  // barra de escala
+  const sc = curFloor()?.scale;
+  if (sc) {
+    const target = W * 0.25 / W * sc.mPerUnit, nice = niceStep(target, 1), px = nice / sc.mPerUnit * W;
+    g.fillStyle = 'rgba(255,255,255,.85)'; g.fillRect(12, H - 46, px + 24, 36);
+    g.fillStyle = '#000'; g.fillRect(24, H - 22, px, 5); g.font = 'bold 16px system-ui'; g.fillText(`${nice} m`, 24, H - 28);
+  }
+  if (state.scalePick?.length === 1) { const [a] = state.scalePick; g.fillStyle = '#d33'; g.beginPath(); g.arc(a[0] * W, a[1] * H, 8, 0, 7); g.fill(); }
+  const n = state.points.filter(p => !p.pos).length;
+  $('planHint').textContent = (sc ? `Escala: 1 m = ${(W / sc.mPerUnit).toFixed(0)} px. ` : 'Sem escala (toque em Escala para definir). ') + (n ? `${n} ponto(s) só com GPS aparecem na visão GPS.` : '');
 }
+$('plan').addEventListener('click', async e => {
+  const r = e.currentTarget.getBoundingClientRect(), pos = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+  if (state.scalePick) {
+    state.scalePick.push(pos);
+    if (state.scalePick.length === 2) {
+      const [a, b] = state.scalePick; state.scalePick = null;
+      const m = parseFloat((prompt('Distância real entre os dois pontos, em metros:') || '').replace(',', '.'));
+      if (m > 0) { curFloor().scale = { mPerUnit: m / planDist(a, b) }; await saveFloors(); setStatus(`Escala definida: ${m} m.`); }
+      else setStatus('Escala cancelada.');
+    }
+    drawPlan(); return;
+  }
+  state.pos = pos;
+  const mm = toMeters(pos);
+  $('xy').value = mm ? `${mm[0].toFixed(1)} m, ${mm[1].toFixed(1)} m` : pos.map(v => v.toFixed(3)).join(', ');
+  drawPlan();
+  setStatus('Posição marcada. Toque em Coletar.');
+});
+function loadImg(blob) { return new Promise(res => { if (!blob) return res(null); const img = new Image(); img.onload = () => res(img); img.onerror = () => res(null); img.src = URL.createObjectURL(blob); }); }
+$('planFile').onchange = async e => {
+  const blob = e.target.files[0]; if (!blob) return;
+  state.planImgs[state.floor] = await loadImg(blob); await save('plan:' + state.floor, blob);
+  sizePlan(); drawPlan();
+};
+
+// ---------- Mapa GPS (OpenStreetMap) ----------
+const tileCache = {};
+function tile(z, x, y) {
+  const k = `${z}/${x}/${y}`;
+  if (!tileCache[k]) { const img = new Image(); img.crossOrigin = 'anonymous'; img.onload = () => drawGps(); img.src = `https://tile.openstreetmap.org/${k}.png`; tileCache[k] = img; }
+  return tileCache[k];
+}
+const lon2x = (lon, z) => (lon + 180) / 360 * 256 * 2 ** z;
+const lat2y = (lat, z) => { const r = lat * Math.PI / 180; return (1 - Math.log(Math.tan(r) + 1 / Math.cos(r)) / Math.PI) / 2 * 256 * 2 ** z; };
+function drawGps() {
+  const c = $('gpsMap'); if (!c.offsetParent) return;
+  const g = c.getContext('2d'), W = c.width, H = c.height;
+  g.fillStyle = css('--bg'); g.fillRect(0, 0, W, H);
+  const key = $('metric').value, pts = state.points.filter(p => p.gps);
+  if (!pts.length) { g.fillStyle = css('--muted'); g.font = '22px system-ui'; g.fillText('Nenhum ponto com GPS ainda. Marque "Pegar GPS" na aba Medir.', 20, 40); return; }
+  const lats = pts.map(p => p.gps.lat), lons = pts.map(p => p.gps.lon);
+  const cLat = (Math.min(...lats) + Math.max(...lats)) / 2, cLon = (Math.min(...lons) + Math.max(...lons)) / 2;
+  let z = 19;
+  while (z > 3 && (lon2x(Math.max(...lons), z) - lon2x(Math.min(...lons), z) > W * 0.8 || lat2y(Math.min(...lats), z) - lat2y(Math.max(...lats), z) > H * 0.8)) z--;
+  const ox = lon2x(cLon, z) - W / 2, oy = lat2y(cLat, z) - H / 2;
+  if (navigator.onLine) {
+    for (let tx = Math.floor(ox / 256); tx <= Math.floor((ox + W) / 256); tx++)
+      for (let ty = Math.floor(oy / 256); ty <= Math.floor((oy + H) / 256); ty++) {
+        const img = tile(z, tx, ty);
+        if (img.complete && img.naturalWidth) g.drawImage(img, tx * 256 - ox, ty * 256 - oy);
+      }
+  }
+  const vals = pts.map(p => metricVal(p, key)).filter(v => v != null), [lo, hi] = colorLabels(vals), span = hi - lo;
+  for (const p of pts) drawMarker(g, lon2x(p.gps.lon, z) - ox, lat2y(p.gps.lat, z) - oy, metricVal(p, key), p.label, lo, span);
+  g.font = '12px system-ui'; g.fillStyle = 'rgba(255,255,255,.8)'; g.fillRect(W - 190, H - 20, 190, 20); g.fillStyle = '#333'; g.fillText('© OpenStreetMap contributors', W - 184, H - 6);
+}
+$('mapView').onchange = () => {
+  const gps = $('mapView').value === 'gps';
+  $('planBox').style.display = gps ? 'none' : ''; $('gpsBox').style.display = gps ? '' : 'none';
+  drawPlan(); drawGps(); saveSettings();
+};
+
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const floorName = id => state.floors.find(f => f.id === id)?.name ?? '';
 function drawTable() {
   const key = $('metric').value;
   $('count').textContent = state.points.length;
-  $('tbl').innerHTML = state.points.slice().reverse().map(p => `<tr><td>${p.id}</td><td>${esc(p.label)}</td><td>${p.time.slice(11, 19)}</td><td>${p.max.toFixed(1)}</td><td>${(p.fmax / 1e6).toFixed(3)}</td><td>${p[key].toFixed(1)}</td><td>${p.gps ? '✓' : ''}</td><td><a href="#" data-del="${p.id}">apagar</a></td></tr>`).join('');
+  $('tbl').innerHTML = state.points.slice().reverse().map(p => `<tr><td>${p.id}</td><td>${esc(p.label)}</td><td>${p.time.slice(11, 19)}</td><td>${p.max.toFixed(1)}</td><td>${(p.fmax / 1e6).toFixed(3)}</td><td>${fmtV(metricVal(p, key))}</td><td>${esc(p.pos ? floorName(p.floor ?? state.floors[0]?.id) : '')}</td><td>${p.gps ? '✓' : ''}</td><td><a href="#" data-del="${p.id}">apagar</a></td></tr>`).join('');
 }
 $('tbl').onclick = async e => {
   const id = +e.target.dataset.del; if (!id) return;
   e.preventDefault();
   if (!confirm('Apagar o ponto ' + id + '?')) return;
   state.points = state.points.filter(p => p.id !== id);
-  await save('points', state.points); drawPlan(); drawTable();
+  await save('points', state.points); drawPlan(); drawGps(); drawTable();
 };
-function drawAll() { drawSpectrum(); drawWaterfall(); drawPlan(); drawTable(); }
+function drawAll() { drawSpectrum(); drawWaterfall(); drawPlan(); drawGps(); drawTable(); }
 addEventListener('resize', () => requestAnimationFrame(drawAll));
-$('metric').onchange = () => { drawPlan(); drawTable(); };
-for (const id of ['lo', 'hi']) $(id).addEventListener('input', () => { drawPlan(); saveSettings(); });
-
-$('plan').addEventListener('click', e => {
-  const r = e.currentTarget.getBoundingClientRect();
-  state.pos = [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
-  $('xy').value = state.pos.map(v => v.toFixed(3)).join(', ');
-  drawPlan();
-  setStatus('Posição marcada. Volte em Medir ou toque em Coletar.');
-});
-async function setPlan(blob) {
-  if (!blob) return;
-  const img = new Image();
-  img.onload = () => { state.planImg = img; $('plan').height = Math.round($('plan').width * img.height / img.width); drawPlan(); };
-  img.src = URL.createObjectURL(blob);
-  state.planBlob = blob;
-}
-$('planFile').onchange = async e => { await setPlan(e.target.files[0]); save('plan', state.planBlob); };
+$('metric').onchange = () => { drawPlan(); drawGps(); drawTable(); saveSettings(); };
+for (const id of ['lo', 'hi']) $(id).addEventListener('input', () => { drawPlan(); drawGps(); saveSettings(); });
 
 // ---------- Exportação / sessão ----------
-function download(name, text, type) { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text], { type })); a.download = name; a.click(); }
+function downloadBlob(name, blob) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); }
+const download = (name, text, type) => downloadBlob(name, new Blob([text], { type }));
 const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 $('btnCsv').onclick = () => {
-  const head = 'id,label,time,device,input,x,y,lat,lon,gps_acc_m,start_mhz,stop_mhz,points,average,peak_dbm,peak_hz,mean_dbm,chpow_dbm';
-  const rows = state.points.map(p => [p.id, JSON.stringify(p.label), p.time, p.device, p.input, p.pos?.[0] ?? '', p.pos?.[1] ?? '', p.gps?.lat ?? '', p.gps?.lon ?? '', p.gps?.acc ?? '',
-    p.startMHz, p.stopMHz, p.points, p.average, p.max.toFixed(2), p.fmax, p.mean.toFixed(2), p.chpow.toFixed(2)].join(','));
+  const head = 'id,label,time,device,input,floor,x,y,x_m,y_m,lat,lon,gps_acc_m,start_mhz,stop_mhz,points,average,rbw_khz,att_db,offset_db,peak_dbm,peak_hz,mean_dbm,chpow_dbm,ch_mhz,ch_bw_khz,ch_dbm';
+  const rows = state.points.map(p => {
+    const fl = state.floors.find(f => f.id === (p.floor ?? state.floors[0]?.id));
+    return [p.id, JSON.stringify(p.label), p.time, p.device, p.input, p.pos ? JSON.stringify(fl?.name ?? '') : '', p.pos?.[0] ?? '', p.pos?.[1] ?? '', p.xm?.toFixed(2) ?? '', p.ym?.toFixed(2) ?? '',
+      p.gps?.lat ?? '', p.gps?.lon ?? '', p.gps?.acc ?? '', p.startMHz, p.stopMHz, p.points, p.average, p.rbw ?? 'auto', p.att ?? 'auto', p.offset ?? 0,
+      p.max.toFixed(2), p.fmax, p.mean.toFixed(2), p.chpow.toFixed(2), p.chMHz ?? '', p.chMHz != null ? p.chBwKHz : '', p.ch != null ? p.ch.toFixed(2) : ''].join(',');
+  });
   download(`survey-${stamp()}.csv`, [head, ...rows].join('\n'), 'text/csv');
 };
-$('btnJson').onclick = () => download(`survey-${stamp()}.json`, JSON.stringify({ app: 'site-survey-rf', version: 2, points: state.points }), 'application/json');
+$('btnJson').onclick = () => download(`survey-${stamp()}.json`, JSON.stringify({ app: 'site-survey-rf', version: 3, floors: state.floors.map(({ id, name, scale }) => ({ id, name, scale })), points: state.points }), 'application/json');
 $('fileLoad').onchange = async e => {
   try {
     const d = JSON.parse(await e.target.files[0].text());
     state.points = d.points || [];
-    await save('points', state.points); drawPlan(); drawTable();
+    for (const f of d.floors || []) if (!state.floors.some(x => x.id === f.id)) state.floors.push(f);
+    showFloors(); await saveFloors();
+    await save('points', state.points); drawPlan(); drawGps(); drawTable();
   } catch (err) { setStatus('Arquivo inválido: ' + err.message, 'bad'); }
 };
 $('btnClear').onclick = async () => {
   if (state.points.length && !confirm('Começar uma nova sessão? Exporte antes: os pontos atuais serão apagados do aparelho.')) return;
   state.points = []; state.pos = null; $('xy').value = '';
-  await save('points', []); drawPlan(); drawTable();
+  await save('points', []); drawPlan(); drawGps(); drawTable();
+};
+
+// PNG: o espectro como está na tela; o mapa na visão atual
+function canvasPng(c, name) {
+  try { c.toBlob(b => b ? downloadBlob(name, b) : setStatus('Não foi possível gerar a imagem.', 'bad'), 'image/png'); }
+  catch (_) { setStatus('O mapa de rua não pode ser exportado como imagem; use a visão Planta.', 'bad'); }
+}
+$('btnPngSpec').onclick = () => { showTab('medir'); requestAnimationFrame(() => canvasPng($('spec'), `espectro-${stamp()}.png`)); };
+$('btnPngMap').onclick = () => { showTab('mapa'); requestAnimationFrame(() => canvasPng($('mapView').value === 'gps' ? $('gpsMap') : $('plan'), `mapa-${stamp()}.png`)); };
+
+// Relatório: página para imprimir ou salvar como PDF, com mapa por andar, tabela e o espectro de cada ponto
+function miniSpectrum(p, w = 520, h = 150) {
+  const c = document.createElement('canvas'); c.width = w; c.height = h;
+  const g = c.getContext('2d'), lo = Math.floor(Math.min(...p.dbm) / 10) * 10, hi = Math.ceil(Math.max(...(p.maxhold || p.dbm)) / 10) * 10 + 5;
+  const X = i => 40 + i / (p.dbm.length - 1) * (w - 50), Y = v => 10 + (hi - v) / (hi - lo) * (h - 30);
+  g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.strokeStyle = '#ddd'; g.fillStyle = '#555'; g.font = '10px sans-serif';
+  for (let v = Math.ceil(lo / 10) * 10; v <= hi; v += 10) { g.beginPath(); g.moveTo(40, Y(v)); g.lineTo(w - 10, Y(v)); g.stroke(); g.fillText(v, 6, Y(v) + 3); }
+  g.fillText(`${p.startMHz} MHz`, 40, h - 6); g.textAlign = 'right'; g.fillText(`${p.stopMHz} MHz`, w - 10, h - 6);
+  const line = (arr, col) => { g.strokeStyle = col; g.lineWidth = 1.3; g.beginPath(); arr.forEach((v, i) => i ? g.lineTo(X(i), Y(v)) : g.moveTo(X(i), Y(v))); g.stroke(); };
+  if (p.maxhold) line(p.maxhold, '#d4760a');
+  line(p.dbm, '#1f6feb');
+  return c.toDataURL('image/png');
+}
+$('btnReport').onclick = () => {
+  if (!state.points.length) { setStatus('Nenhum ponto para o relatório.', 'bad'); return; }
+  const key = $('metric').value, keyName = $('metric').selectedOptions[0].text;
+  const view = $('mapView').value, saveFloor = state.floor, savePos = state.pos;
+  showTab('mapa'); $('mapView').value = 'plan'; $('mapView').onchange(); state.pos = null;
+  const maps = [];
+  for (const f of state.floors) {
+    if (!state.points.some(p => p.pos && (p.floor ?? state.floors[0].id) === f.id)) continue;
+    state.floor = f.id; sizePlan(); drawPlan();
+    try { maps.push(`<h2>Mapa — ${esc(f.name)}</h2><img src="${$('plan').toDataURL('image/png')}">`); } catch (_) {}
+  }
+  state.floor = saveFloor; state.pos = savePos; sizePlan(); $('mapView').value = view; $('mapView').onchange();
+  const p0 = state.points[0];
+  const rows = state.points.map(p => `<tr><td>${p.id}</td><td>${esc(p.label)}</td><td>${new Date(p.time).toLocaleString('pt-BR')}</td><td>${esc(p.pos ? floorName(p.floor ?? state.floors[0]?.id) : '')}</td><td>${p.gps ? `${p.gps.lat.toFixed(5)}, ${p.gps.lon.toFixed(5)}` : ''}</td><td>${p.max.toFixed(1)}</td><td>${(p.fmax / 1e6).toFixed(3)}</td><td>${fmtV(metricVal(p, key))}</td></tr>`).join('');
+  const specs = state.points.map(p => `<div class="sp"><b>${esc(p.label)}</b> — pico ${p.max.toFixed(1)} dBm em ${(p.fmax / 1e6).toFixed(3)} MHz<br><img src="${miniSpectrum(p)}"></div>`).join('');
+  const html = `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>Relatório de site survey</title><style>
+    body{font:13px/1.4 system-ui,sans-serif;color:#111;margin:24px} h1{font-size:20px;margin:0 0 4px} h2{font-size:15px;margin:20px 0 8px}
+    table{border-collapse:collapse;width:100%;font-size:12px} td,th{border-bottom:1px solid #ccc;padding:4px;text-align:left}
+    img{max-width:100%} .sp{display:inline-block;width:48%;margin:0 1% 12px 0;vertical-align:top;break-inside:avoid} .meta{color:#555}
+    @media print{button{display:none}}</style></head><body>
+    <button onclick="print()">Imprimir / salvar PDF</button>
+    <h1>Relatório de site survey RF</h1>
+    <div class="meta">Gerado em ${new Date().toLocaleString('pt-BR')} · ${state.points.length} pontos · ${esc(state.device?.name || '')} · faixa ${p0.startMHz}–${p0.stopMHz} MHz · métrica do mapa: ${esc(keyName)}</div>
+    ${maps.join('')}
+    <h2>Pontos</h2><table><thead><tr><th>#</th><th>Nome</th><th>Data/hora</th><th>Andar</th><th>GPS</th><th>Pico dBm</th><th>Freq. pico MHz</th><th>${esc(keyName)}</th></tr></thead><tbody>${rows}</tbody></table>
+    <h2>Espectro de cada ponto</h2><div>${specs}</div>
+    <p class="meta">Azul: média das leituras do ponto. Laranja: max hold.</p></body></html>`;
+  const w = window.open('', '_blank');
+  if (w) { w.document.write(html); w.document.close(); setTimeout(() => w.print(), 600); }
+  else downloadBlob(`relatorio-${stamp()}.html`, new Blob([html], { type: 'text/html' }));
 };
 
 // ---------- Configurações ----------
-function saveSettings() { save('settings', { ...params(), device: $('device').value, autoGps: $('autoGps').checked, lo: $('lo').value, hi: $('hi').value }); }
+function saveSettings() { save('settings', { ...params(), device: $('device').value, autoGps: $('autoGps').checked, lo: $('lo').value, hi: $('hi').value, metric: $('metric').value, mapView: $('mapView').value, autoSec: $('autoSec').value }); }
 
 (async function init() {
   const s = await load('settings');
   if (s) {
     $('device').value = s.device ?? 0;
-    $('fStart').value = s.startMHz; $('fStop').value = s.stopMHz; $('pts').value = s.points; $('avg').value = s.average;
+    selectDevice(); setParams(s);
     $('autoGps').checked = !!s.autoGps; $('lo').value = s.lo ?? ''; $('hi').value = s.hi ?? '';
+    if (s.metric) $('metric').value = s.metric; if (s.mapView) $('mapView').value = s.mapView; if (s.autoSec) $('autoSec').value = s.autoSec;
   }
   selectDevice();
   state.points = (await load('points')) || [];
-  await setPlan(await load('plan'));
+  state.profiles = (await load('profiles')) || []; showProfiles();
+  // andares: migra a planta única das versões anteriores para o "Andar 1"
+  state.floors = (await load('floors')) || [];
+  if (!state.floors.length) {
+    state.floors = [{ id: 1, name: 'Andar 1', scale: null }];
+    const old = await load('plan'); if (old) await save('plan:1', old);
+  }
+  state.floor = (await load('floorCur')) ?? state.floors[0].id;
+  if (!state.floors.some(f => f.id === state.floor)) state.floor = state.floors[0].id;
+  for (const f of state.floors) state.planImgs[f.id] = await loadImg(await load('plan:' + f.id));
+  await saveFloors(); showFloors(); sizePlan();
+  $('mapView').onchange();
   drawAll();
   if (state.points.length) log(`sessão restaurada: ${state.points.length} pontos`);
   if (!('serial' in navigator)) log(('usb' in navigator) ? 'Web Serial indisponível; será usado WebUSB.' : 'Navegador sem Web Serial e sem WebUSB.');

@@ -11,7 +11,7 @@ App web (PWA) para site survey de RF com o **TinySA Basic**, pensado para celula
 5. Escolha a faixa, carregue a planta (opcional), toque na planta onde você está e toque em **Coletar ponto**.
 6. Ao terminar, use **Exportar CSV/JSON**.
 
-Os pontos ficam salvos no celular mesmo se o app fechar. Depois de instalado, o app abre sem internet. O botão **Ajuda** no topo do app explica a coleta, a antena e os problemas comuns.
+O app tem três abas: **Medir** (espectro ao vivo com max hold e waterfall, coleta), **Mapa** (planta por andar com escala, ou mapa GPS) e **Dados** (tabela, CSV/JSON, PNG e relatório PDF). Os pontos ficam salvos no celular mesmo se o app fechar. Depois de instalado, o app abre sem internet. O botão **Ajuda** no topo do app explica a coleta, a antena e os problemas comuns.
 
 ### TinySA Basic: entradas LOW e HIGH
 
