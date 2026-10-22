@@ -46,21 +46,50 @@ export const tinysa = {
   id: 'tinysa-basic',
   name: 'TinySA Basic (USB)',
   async connect({ log, prefer }) {
+    this.log = log; this.prefer = prefer;
     this.t = pickTransport(prefer, 115200, USB_FILTERS);
     await this.t.open();
-    this.ch = new LineChannel(this.t, 'ch> ', log);
-    this.input = null; this.rbw = null; this.att = null;
+    return this._hello();
+  },
+  async _hello(timeoutMs = 20000) {
+    this.ch = new LineChannel(this.t, 'ch> ', this.log);
+    this.input = null; this.rbw = null; this.att = null; // reenvia modo, RBW e atenuação na próxima varredura
     await this.ch.drain(); // limpa o que estiver no buffer antes do primeiro comando
-    return (await this.ch.cmd('version')).trim().split(/\r?\n/)[0];
+    return (await this.ch.cmd('version', timeoutMs)).trim().split(/\r?\n/)[0];
   },
   async disconnect() { await this.t?.close(); },
+  // Reabre o USB sem pedir para escolher o aparelho, tentando até o prazo (o TinySA leva alguns segundos para voltar)
+  async _reopen(totalMs) {
+    await this.t?.close();
+    const end = Date.now() + totalMs;
+    for (;;) {
+      await new Promise(r => setTimeout(r, 1000));
+      try { this.t = pickTransport(this.prefer, 115200, USB_FILTERS); await this.t.open({ noPrompt: true }); return await this._hello(4000); }
+      catch (e) { await this.t?.close(); if (Date.now() > end) throw new Error('o TinySA não voltou: ' + e.message); }
+    }
+  },
+  // Destrava sem reiniciar: limpa a linha e confere se responde; se não, fecha e reabre o USB
+  async recover() {
+    const limit = new Promise((_, rej) => setTimeout(() => rej(new Error('USB parado')), 5000));
+    try { await Promise.race([(async () => { await this.ch.drain(); await this.ch.cmd('version', 3000); })(), limit]); this.input = this.rbw = this.att = null; this.log('recuperado sem reabrir o USB'); return; }
+    catch (e) { this.log('sem resposta (' + e.message + '); reabrindo o USB'); }
+    await this._reopen(8000);
+  },
+  // Reinicia o TinySA pelo comando "reset" e reconecta sozinho
+  async reboot() {
+    try { await this.ch.send('reset'); } catch (_) {}
+    this.log('comando reset enviado; aguardando o TinySA voltar');
+    await new Promise(r => setTimeout(r, 2500));
+    return this._reopen(20000);
+  },
   // rbw: 'auto' ou kHz; att: 'auto' ou dB (comandos "rbw" e "attenuate" do TinySA)
   async sweep({ startMHz, stopMHz, points, rbw = 'auto', att = 'auto' }) {
     const mode = inputFor(startMHz, stopMHz);
     if (this.input !== mode) { await this.ch.cmd(`mode ${mode} input`); this.input = mode; this.rbw = this.att = null; }
     if (this.rbw !== String(rbw)) { await this.ch.cmd(`rbw ${rbw}`); this.rbw = String(rbw); }
     if (this.att !== String(att)) { await this.ch.cmd(`attenuate ${att}`); this.att = String(att); }
-    const out = await this.ch.cmd(`scan ${Math.round(startMHz * 1e6)} ${Math.round(stopMHz * 1e6)} ${points} 3`, 60000);
+    // prazo proporcional ao número de pontos: se passar disso, consideramos que travou
+    const out = await this.ch.cmd(`scan ${Math.round(startMHz * 1e6)} ${Math.round(stopMHz * 1e6)} ${points} 3`, 15000 + points * 50);
     const freqs = [], dbm = [];
     for (const l of out.split(/\r?\n/)) {
       const m = l.trim().split(/\s+/);
@@ -78,6 +107,8 @@ export const tinysaSim = {
   name: 'TinySA simulado (sem aparelho)',
   async connect() { return 'tinySA simulado'; },
   async disconnect() {},
+  async recover() {},
+  async reboot() { await new Promise(r => setTimeout(r, 1500)); return 'tinySA simulado (reiniciado)'; },
   async sweep({ startMHz, stopMHz, points }, ctx = {}) {
     const [x, y] = ctx.pos || [0.5, 0.5];
     const a = startMHz * 1e6, b = stopMHz * 1e6, bw = (b - a) / 120;

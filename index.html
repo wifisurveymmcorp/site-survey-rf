@@ -46,6 +46,11 @@
   #wf { height:min(18vh, 160px); margin-top:6px; image-rendering:pixelated; }
   .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px; }
   .legend i { display:inline-block; width:14px; height:3px; vertical-align:middle; margin-right:4px; border-radius:2px; }
+  .mkbar { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .mkbar select.small { width:auto; min-height:34px; padding:4px 8px; margin:0; font-size:13px; }
+  .mktable { width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
+  .mktable td { padding:5px 6px; border-bottom:1px solid var(--line); }
+  .mktable tr.act { background:color-mix(in srgb, var(--acc) 14%, transparent); }
   #readout { font:600 13px system-ui; min-height:18px; margin-top:4px; }
   .colorbar { height:10px; border-radius:5px; background:linear-gradient(90deg, hsl(240,85%,50%), hsl(180,85%,45%), hsl(120,85%,40%), hsl(60,85%,50%), hsl(0,85%,50%)); margin-top:8px; }
   .colorbar-labels { display:flex; justify-content:space-between; font-size:11px; color:var(--muted); }
@@ -101,6 +106,7 @@
       <div class="row">
         <button id="btnConnect">Conectar</button>
         <button id="btnDisconnect" class="sec" disabled>Desconectar</button>
+        <button id="btnReboot" class="sec" disabled title="Envia o comando reset e reconecta">Reiniciar TinySA</button>
       </div>
     </section>
 
@@ -152,6 +158,19 @@
         <span id="sweepRate"></span>
       </div>
       <div id="readout" class="status"></div>
+      <div class="mkbar">
+        <button id="mkAdd" class="small">+ Marcador</button>
+        <button id="mkPeak" class="sec small">Pico</button>
+        <button id="mkNext" class="sec small">Próx. pico</button>
+        <button id="mkTrack" class="sec small toggle">Seguir pico</button>
+        <button id="mkDelta" class="sec small toggle">Δ M1</button>
+        <button id="mkCenter" class="sec small">→ Centro</button>
+        <button id="mkCh" class="sec small">→ Canal</button>
+        <select id="mkTrace" class="small"><option value="max">Max hold</option><option value="avg">Média</option><option value="cur">Atual</option></select>
+        <button id="mkDel" class="sec small">Remover</button>
+      </div>
+      <table id="mkTable" class="mktable"></table>
+      <div id="mkHint" class="status"></div>
       <div class="status">Toque duplo no gráfico aproxima naquela frequência; ↺ volta.</div>
       <canvas id="wf"></canvas>
       <div class="status">Waterfall: cada linha é uma varredura, a mais nova em cima.</div>
@@ -179,6 +198,10 @@
             <option value="mean">Média na faixa (dBm)</option>
             <option value="chpow">Potência integrada (dBm)</option>
             <option value="ch">Canal de interesse (dBm)</option>
+            <option value="m1">Marcador M1 (dBm)</option>
+            <option value="m2">Marcador M2 (dBm)</option>
+            <option value="m3">Marcador M3 (dBm)</option>
+            <option value="m4">Marcador M4 (dBm)</option>
           </select></div>
         <div><label>Visão</label>
           <select id="mapView"><option value="plan">Planta</option><option value="gps">GPS (mapa de rua)</option></select></div>
@@ -267,6 +290,20 @@
       <li><b>Max hold</b> (laranja): o maior valor visto em cada frequência. Pega sinais que aparecem e somem, como rádios TETRA e DMR. <b>Zerar max</b> recomeça.</li>
       <li><b>Waterfall</b>: cada linha é uma varredura, a mais nova em cima; mostra quando cada canal transmite.</li>
     </ul>
+
+    <h3>Se o TinySA travar</h3>
+    <p>Se uma varredura não responder, o app tenta destravar sozinho: limpa a comunicação e, se precisar, reabre o USB. Se não der, toque em <b>Reiniciar TinySA</b> (em Dispositivo): o app manda o comando de reinício e reconecta sozinho em uns 10 segundos. Se nem isso funcionar, desligue e ligue o TinySA na chave e toque em <b>Conectar</b>.</p>
+
+    <h3>Marcadores</h3>
+    <ul>
+      <li><b>+ Marcador</b> cria até 4 marcadores (M1 a M4), cada um vai para o próximo sinal mais forte livre.</li>
+      <li>Arraste no gráfico para mover o marcador ativo. Toque numa linha da tabela para escolher outro.</li>
+      <li><b>Pico</b> leva ao sinal mais forte; <b>Próx. pico</b> pula para o próximo mais fraco; <b>Seguir pico</b> faz o marcador acompanhar o pico a cada varredura.</li>
+      <li><b>Δ M1</b> mostra os outros marcadores em diferença de frequência e nível em relação ao M1.</li>
+      <li><b>→ Centro</b> centraliza a varredura no marcador; <b>→ Canal</b> usa a frequência dele como canal de interesse.</li>
+      <li>O valor de cada marcador é salvo em cada ponto coletado, vai para o CSV e pode ser a métrica do mapa de calor.</li>
+    </ul>
+    <p>O botão <b>Voltar</b> do Android não fecha mais o app de uma vez: ele fecha a ajuda, volta para a aba Medir e só sai se tocar duas vezes.</p>
 
     <h3>Recursos de medição</h3>
     <ul>

@@ -5,8 +5,10 @@ export class WebSerialTransport {
   static available() { return 'serial' in navigator; }
   constructor(baudRate = 115200, filters = []) { this.baudRate = baudRate; this.filters = filters; }
   // Reusa uma porta já autorizada antes; só abre a janela de escolha se não houver
-  async open() {
+  // noPrompt: só reabre uma porta já autorizada (usado ao reconectar depois de reiniciar o aparelho)
+  async open({ noPrompt = false } = {}) {
     const known = (await navigator.serial.getPorts()).filter(p => this.matches(p.getInfo()));
+    if (noPrompt && known.length !== 1) throw new Error('aparelho ainda não apareceu');
     this.port = known.length === 1 ? known[0] : await navigator.serial.requestPort({ filters: this.filters });
     await this.port.open({ baudRate: this.baudRate });
     this.writer = this.port.writable.getWriter();
@@ -28,8 +30,9 @@ export class WebUsbCdcTransport {
   static available() { return 'usb' in navigator; }
   constructor(baudRate = 115200, filters = []) { this.baudRate = baudRate; this.filters = filters; }
   // Reusa o aparelho já autorizado (sem janela de escolha) quando há exatamente um compatível
-  async open() {
+  async open({ noPrompt = false } = {}) {
     const known = (await navigator.usb.getDevices()).filter(d => this.matches(d));
+    if (noPrompt && known.length !== 1) throw new Error('aparelho ainda não apareceu');
     const d = this.dev = known.length === 1 ? known[0] : await navigator.usb.requestDevice({ filters: this.filters });
     await d.open();
     if (!d.configuration) await d.selectConfiguration(1);
@@ -89,7 +92,7 @@ export class LineChannel {
   }
   // Lê um pedaço do transporte com timeout, mantendo a leitura pendente para não perder bytes
   async _read(ms) {
-    this.pending ??= this.t.read();
+    if (!this.pending) { this.pending = this.t.read(); this.pending.catch(() => {}); } // erro tratado no race abaixo
     let timer;
     const chunk = await Promise.race([this.pending, new Promise(res => { timer = setTimeout(() => res(null), ms); })])
       .finally(() => clearTimeout(timer));
@@ -103,6 +106,8 @@ export class LineChannel {
     if (this.buf) this.log('descartado: ' + JSON.stringify(this.buf.slice(-200)));
     this.buf = '';
   }
+  // Envia sem esperar resposta (ex.: "reset", que reinicia o aparelho e derruba o USB)
+  async send(line) { await this.t.write(new TextEncoder().encode(line + '\r')); }
   async _cmd(line, timeoutMs) {
     this.buf = ''; // o comando anterior já terminou; o que sobrou é lixo
     await this.t.write(new TextEncoder().encode(line + '\r'));

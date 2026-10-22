@@ -3,8 +3,9 @@ import { save, load } from './store.js';
 
 const $ = id => document.getElementById(id);
 
-const APP_VERSION = '0.6';
+const APP_VERSION = '0.7';
 const CHANGELOG = [
+  ['0.7', 'Botão Reiniciar TinySA (comando reset, reconecta sozinho) e destravamento automático quando ele para de responder; Voltar do Android não fecha mais o app de uma vez; marcadores M1 a M4 como nos analisadores de bancada: pico, próximo pico, seguir pico, delta em relação ao M1, marcador para centro e para canal; valores dos marcadores salvos em cada ponto, no CSV, no relatório e como métrica do mapa.'],
   ['0.6', 'Canal de interesse como métrica do mapa; RBW, atenuação e offset; perfis salvos; coleta automática andando; vários andares e escala na planta; mapa GPS com OpenStreetMap; zoom no espectro com toque duplo; exportar PNG e relatório em PDF.'],
   ['0.5', 'Nova interface em abas (Medir, Mapa, Dados); modo ao vivo com traços atual, média e max hold; waterfall; pico marcado e leitura ao tocar no gráfico; legenda de cores com limites; reconecta sem pedir para escolher o aparelho de novo.'],
   ['0.4', 'Tela de Ajuda, aviso de espectro plano (antena), indicador online/offline.'],
@@ -16,12 +17,13 @@ const WF_ROWS = 120;
 
 const state = {
   device: null, connected: false, pos: null, gps: null, points: [],
-  live: false, busy: false,          // busy = uma varredura em andamento (ao vivo ou coleta)
+  live: false,
   trace: null,                       // { freqs, cur, avg, max, n, startMHz, stopMHz, key }
   wf: [],                            // linhas do waterfall (dBm), a mais nova primeiro
   cursor: null,                      // índice tocado no gráfico
   floors: [],                        // [{ id, name, scale: { mPerUnit } }]; imagens em state.planImgs
   floor: null, planImgs: {}, scalePick: null, zoomStack: [], profiles: [],
+  markers: [], mkActive: 0, mkDelta: false, // marcadores: [{ f (Hz), track (segue o pico), trace: 'max'|'avg'|'cur' }]
 };
 
 // ---------- Log ----------
@@ -51,6 +53,19 @@ function showTab(name) {
   requestAnimationFrame(drawAll);
 }
 for (const b of document.querySelectorAll('nav button')) b.onclick = () => showTab(b.dataset.tab);
+
+// Botão Voltar do Android (e o botão direito do mouse no scrcpy, que vira Voltar) fechava o app na hora.
+// Agora ele fecha a ajuda, volta para a aba Medir e só sai com dois toques seguidos.
+let backAt = 0;
+history.pushState({ app: 1 }, '');
+addEventListener('popstate', () => {
+  const tab = document.querySelector('nav button.active')?.dataset.tab;
+  if ($('help').open) $('help').close();
+  else if (tab !== 'medir') showTab('medir');
+  else if (Date.now() - backAt > 2000) { backAt = Date.now(); setStatus('Toque Voltar de novo para sair do app.', 'warn'); }
+  else { history.back(); return; }
+  history.pushState({ app: 1 }, '');
+});
 
 // ---------- Ajuda / estado ----------
 $('ver').textContent = 'versão ' + APP_VERSION;
@@ -129,7 +144,7 @@ function setConnected(on, text) {
   state.connected = on;
   $('dot').classList.toggle('on', on);
   $('connText').textContent = text;
-  $('btnConnect').disabled = on; $('btnDisconnect').disabled = !on; $('device').disabled = on;
+  $('btnConnect').disabled = on; $('btnDisconnect').disabled = !on; $('btnReboot').disabled = !on; $('device').disabled = on;
   $('btnCapture').disabled = !on; $('btnLive').disabled = !on;
 }
 
@@ -147,10 +162,23 @@ $('btnConnect').onclick = async () => {
     $('connText').textContent = 'erro ao conectar'; setStatus(e.message, 'bad'); log('falha ao conectar: ' + e.message);
   }
 };
+// Reinicia o aparelho (comando reset) e reconecta sem pedir permissão de novo
+$('btnReboot').onclick = async () => {
+  if (!confirm('Reiniciar o TinySA? Leva uns 10 segundos e ele reconecta sozinho.')) return;
+  $('btnReboot').disabled = true;
+  await withDevice(async () => {
+    setStatus('Reiniciando o TinySA…', 'warn');
+    try { const v = await state.device.reboot(); $('connText').textContent = v; setStatus('TinySA reiniciado e conectado.'); log('reiniciado: ' + v); }
+    catch (e) {
+      setStatus('Não reconectou: ' + e.message + '. Desligue e ligue o TinySA e toque em Conectar.', 'bad'); log('reinício falhou: ' + e.message);
+      setLive(false); await state.device.disconnect(); setConnected(false, 'desconectado');
+    }
+  });
+  $('btnReboot').disabled = !state.connected;
+};
 $('btnDisconnect').onclick = async () => {
   setLive(false); $('autoCap').checked = false;
-  while (state.busy) await new Promise(r => setTimeout(r, 100));
-  await state.device.disconnect();
+  await withDevice(() => state.device.disconnect());
   setConnected(false, 'desconectado'); keepAwake(false);
 };
 
@@ -177,16 +205,24 @@ function addSweep(p, s) {
   drawSpectrum(); drawWaterfall();
 }
 
-// Uma varredura por vez: o modo ao vivo e a coleta compartilham o dispositivo
-async function sweepOnce(p) {
-  while (state.busy) await new Promise(r => setTimeout(r, 50));
-  state.busy = true;
-  try {
-    const s = await state.device.sweep(p, { pos: state.pos });
-    if (p.offset) s.dbm = s.dbm.map(v => v + p.offset);
-    return s;
+// Fila de acesso ao aparelho: ao vivo, coleta e reinício esperam a vez, na ordem em que foram pedidos
+let devQueue = Promise.resolve();
+function withDevice(fn) { const r = devQueue.then(fn, fn); devQueue = r.catch(() => {}); return r; }
+function sweepOnce(p) { return withDevice(() => sweepNow(p)); }
+async function sweepNow(p) {
+  let s;
+  try { s = await state.device.sweep(p, { pos: state.pos }); }
+  catch (e) {
+    // Travou ou respondeu errado: tenta destravar uma vez e repetir a varredura
+    if (!state.device.recover) throw e;
+    log('varredura falhou (' + e.message + '); tentando destravar');
+    setStatus('O TinySA não respondeu; destravando…', 'warn');
+    try { await state.device.recover(); s = await state.device.sweep(p, { pos: state.pos }); }
+    catch (e2) { throw new Error(e2.message + ' — toque em Reiniciar TinySA, ou desligue e ligue o aparelho'); }
+    setStatus('TinySA destravado, seguindo.');
   }
-  finally { state.busy = false; }
+  if (p.offset) s.dbm = s.dbm.map(v => v + p.offset);
+  return s;
 }
 
 let capturing = false;
@@ -237,7 +273,7 @@ function metrics(f, p, prm = {}) {
   }
   return m;
 }
-const metricVal = (p, key) => p[key] ?? null;
+const metricVal = (p, key) => p[key] ?? null; // inclui m1..m4 (dBm nos marcadores)
 
 $('btnCapture').onclick = () => capture();
 async function capture() {
@@ -259,7 +295,7 @@ async function capture() {
     }
     const dbm = acc.map(v => 10 * Math.log10(v / prm.average));
     state.gps = await gpsP; showGps();
-    const m = metrics(freqs, dbm, prm);
+    const m = { ...metrics(freqs, dbm, prm), ...markerValues(freqs, dbm, maxHold) };
     const rec = {
       id: (state.points.at(-1)?.id || 0) + 1, label: $('label').value.trim(), time: new Date().toISOString(),
       device: state.device.id, input, pos: state.pos, floor: state.pos ? state.floor : null, xm: toMeters(state.pos)?.[0], ym: toMeters(state.pos)?.[1], gps: state.gps, ...prm, freqs, dbm, maxhold: maxHold, ...m,
@@ -313,7 +349,7 @@ function drawSpectrum() {
   g.clearRect(0, 0, w, h);
   g.font = '11px system-ui'; g.fillStyle = css('--muted');
   const t = state.trace;
-  if (!t) { g.fillText(state.connected ? 'Toque em Ao vivo ou Coletar para ver o espectro.' : 'Conecte o TinySA para ver o espectro.', 12, 24); return; }
+  if (!t) { showMarkerTable(state.markers.map(m => ({ f: m.f, dbm: null, trace: m.trace, track: m.track }))); g.fillText(state.connected ? 'Toque em Ao vivo ou Coletar para ver o espectro.' : 'Conecte o TinySA para ver o espectro.', 12, 24); return; }
   const all = [...t.max, ...t.cur];
   const lo = Math.floor(Math.min(...t.cur) / 10) * 10 - 10, hi = Math.ceil(Math.max(...all) / 10) * 10 + 5;
   const f0 = t.freqs[0], f1 = t.freqs.at(-1);
@@ -342,26 +378,144 @@ function drawSpectrum() {
   line(t.max, css('--tr-max'), 1.2);
   line(t.avg, css('--tr-avg'), 1.2);
   line(t.cur, css('--tr-live'), 1.6);
-  // pico do max hold
-  let ip = 0; t.max.forEach((v, i) => { if (v > t.max[ip]) ip = i; });
-  const px = X(t.freqs[ip]), py = Y(t.max[ip]);
-  g.fillStyle = css('--tr-max'); g.beginPath(); g.moveTo(px, py - 3); g.lineTo(px - 5, py - 11); g.lineTo(px + 5, py - 11); g.fill();
-  g.font = '600 11px system-ui'; g.textAlign = px > w - 120 ? 'right' : 'left';
-  g.fillStyle = css('--fg'); g.fillText(`pico ${t.max[ip].toFixed(1)} dBm · ${fmtMHz(t.freqs[ip])} MHz`, px + (g.textAlign === 'left' ? 8 : -8), Math.max(12, py - 12));
-  // cursor tocado
-  if (state.cursor != null && state.cursor < t.freqs.length) {
-    const i = state.cursor, cx = X(t.freqs[i]);
+  // pico do max hold (só quando não há marcadores, para não poluir)
+  if (!state.markers.length) {
+    let ip = 0; t.max.forEach((v, i) => { if (v > t.max[ip]) ip = i; });
+    const px = X(t.freqs[ip]), py = Y(t.max[ip]);
+    g.fillStyle = css('--tr-max'); g.beginPath(); g.moveTo(px, py - 3); g.lineTo(px - 5, py - 11); g.lineTo(px + 5, py - 11); g.fill();
+    g.font = '600 11px system-ui'; g.textAlign = px > w - 120 ? 'right' : 'left';
+    g.fillStyle = css('--fg'); g.fillText(`pico ${t.max[ip].toFixed(1)} dBm · ${fmtMHz(t.freqs[ip])} MHz`, px + (g.textAlign === 'left' ? 8 : -8), Math.max(12, py - 12));
+  }
+  // marcadores
+  const mks = resolveMarkers(t);
+  mks.forEach((m, k) => {
+    const mx = X(t.freqs[m.i]), my = Y(m.dbm), col = MK_COLORS[k], act = k === state.mkActive;
+    if (act) { g.strokeStyle = col; g.setLineDash([3, 3]); g.lineWidth = 1; g.beginPath(); g.moveTo(mx, P.t); g.lineTo(mx, h - P.b); g.stroke(); g.setLineDash([]); }
+    g.fillStyle = col; g.strokeStyle = css('--bg'); g.lineWidth = 1.5;
+    g.beginPath(); g.moveTo(mx, my - 2); g.lineTo(mx - 6, my - 12); g.lineTo(mx + 6, my - 12); g.closePath(); g.fill(); g.stroke();
+    g.font = '700 11px system-ui'; g.textAlign = 'center'; g.fillText(String(k + 1), mx, Math.max(11, my - 15));
+  });
+  showMarkerTable(mks, t);
+  // leitura: marcador ativo, ou o ponto tocado quando não há marcadores
+  const ri = mks.length ? mks[state.mkActive]?.i : state.cursor;
+  if (!mks.length && ri != null && ri < t.freqs.length) {
+    const cx = X(t.freqs[ri]);
     g.strokeStyle = css('--fg'); g.setLineDash([4, 3]); g.lineWidth = 1; g.beginPath(); g.moveTo(cx, P.t); g.lineTo(cx, h - P.b); g.stroke(); g.setLineDash([]);
-    $('readout').textContent = `${fmtMHz(t.freqs[i])} MHz — atual ${t.cur[i].toFixed(1)} · média ${t.avg[i].toFixed(1)} · max ${t.max[i].toFixed(1)} dBm`;
-  } else $('readout').textContent = 'Toque no gráfico para ler um valor.';
+  }
+  if (ri != null && ri < t.freqs.length) $('readout').textContent = `${fmtMHz(t.freqs[ri])} MHz — atual ${t.cur[ri].toFixed(1)} · média ${t.avg[ri].toFixed(1)} · max ${t.max[ri].toFixed(1)} dBm`;
+  else $('readout').textContent = 'Toque no gráfico para ler um valor.';
 }
+
+// ---------- Marcadores ----------
+const MK_COLORS = ['#e5484d', '#3e63dd', '#2f9e44', '#c77d00'];
+const MK_TRACES = { max: 'Max hold', avg: 'Média', cur: 'Atual' };
+const nearestIdx = (freqs, f) => { let b = 0; freqs.forEach((x, i) => { if (Math.abs(x - f) < Math.abs(freqs[b] - f)) b = i; }); return b; };
+const argMax = a => a.reduce((b, v, i) => v > a[b] ? i : b, 0);
+// Picos locais: maior valor numa janela de ±k pontos (ignora o "serrilhado" do ruído)
+function localPeaks(a) {
+  const k = Math.max(2, Math.round(a.length / 100)), out = [];
+  for (let i = 0; i < a.length; i++) {
+    let top = true;
+    for (let j = Math.max(0, i - k); j <= Math.min(a.length - 1, i + k) && top; j++) if (a[j] > a[i] || (a[j] === a[i] && j < i)) top = false;
+    if (top) out.push(i);
+  }
+  return out;
+}
+// Posição de cada marcador na varredura atual; os que seguem o pico andam junto com ele
+function resolveMarkers(t, arrs = t) {
+  return state.markers.map(m => {
+    const a = arrs[m.trace] || arrs.cur;
+    const i = m.track ? argMax(a) : nearestIdx(t.freqs, m.f);
+    if (m.track) m.f = t.freqs[i];
+    return { i, f: t.freqs[i], dbm: a[i], trace: m.trace, track: m.track };
+  });
+}
+function showMarkerTable(mks, t) {
+  const ref = mks[0];
+  $('mkTable').innerHTML = mks.map((m, k) => {
+    const d = state.mkDelta && k > 0 && ref;
+    const val = m.dbm == null ? `${fmtMHz(m.f)} MHz · aguardando varredura` : d ? `Δ ${((m.f - ref.f) / 1e3).toFixed(1)} kHz · ${(m.dbm - ref.dbm >= 0 ? '+' : '') + (m.dbm - ref.dbm).toFixed(1)} dB` : `${fmtMHz(m.f)} MHz · ${m.dbm.toFixed(1)} dBm`;
+    return `<tr data-mk="${k}" class="${k === state.mkActive ? 'act' : ''}"><td><b style="color:${MK_COLORS[k]}">M${k + 1}</b></td><td>${val}</td><td>${MK_TRACES[m.trace]}${m.track ? ' · segue pico' : ''}</td></tr>`;
+  }).join('');
+  showMarkerBar();
+}
+function showMarkerBar() {
+  const m = state.markers[state.mkActive], has = !!m;
+  for (const id of ['mkPeak', 'mkNext', 'mkTrack', 'mkCenter', 'mkCh', 'mkDel', 'mkTrace']) $(id).disabled = !has;
+  $('mkAdd').disabled = state.markers.length >= 4;
+  $('mkDelta').disabled = state.markers.length < 2;
+  $('mkTrack').classList.toggle('on', !!m?.track);
+  $('mkDelta').classList.toggle('on', state.mkDelta);
+  if (m) $('mkTrace').value = m.trace;
+  $('mkHint').textContent = has ? `Arraste no gráfico para mover o M${state.mkActive + 1}. Toque numa linha da tabela para escolher outro marcador.` : 'Sem marcadores: toque no gráfico para ler um valor.';
+}
+function saveMarkers() { save('markers', { list: state.markers, active: state.mkActive, delta: state.mkDelta }); }
+function markersChanged() { saveMarkers(); drawSpectrum(); }
+const curMk = () => state.markers[state.mkActive];
+$('mkAdd').onclick = () => {
+  if (state.markers.length >= 4) return;
+  const t = state.trace;
+  // o primeiro vai para o pico; os seguintes para o próximo pico livre
+  const m = { f: 0, track: false, trace: curMk()?.trace || 'max' };
+  if (t) {
+    const a = t[m.trace], used = resolveMarkers(t).map(x => x.i);
+    const free = localPeaks(a).filter(i => !used.includes(i)).sort((x, y) => a[y] - a[x]);
+    m.f = t.freqs[free[0] ?? argMax(a)];
+  } else { const p = params(); m.f = (p.startMHz + p.stopMHz) / 2 * 1e6; m.track = !state.markers.length; }
+  state.markers.push(m); state.mkActive = state.markers.length - 1; markersChanged();
+};
+$('mkPeak').onclick = () => { const m = curMk(), t = state.trace; if (!m || !t) return; m.f = t.freqs[argMax(t[m.trace])]; markersChanged(); };
+// Próximo pico: o maior pico local abaixo do nível atual do marcador
+$('mkNext').onclick = () => {
+  const m = curMk(), t = state.trace; if (!m || !t) return;
+  const a = t[m.trace], i0 = nearestIdx(t.freqs, m.f), lvl = a[i0];
+  const cand = localPeaks(a).filter(i => i !== i0 && (a[i] < lvl || (a[i] === lvl && i > i0))).sort((x, y) => a[y] - a[x]);
+  if (!cand.length) { setStatus('Não há outro pico abaixo deste.'); return; }
+  m.track = false; m.f = t.freqs[cand[0]]; markersChanged();
+};
+$('mkTrack').onclick = () => { const m = curMk(); if (!m) return; m.track = !m.track; markersChanged(); };
+$('mkDelta').onclick = () => { state.mkDelta = !state.mkDelta; markersChanged(); };
+$('mkTrace').onchange = () => { const m = curMk(); if (!m) return; m.trace = $('mkTrace').value; markersChanged(); };
+$('mkDel').onclick = () => { state.markers.splice(state.mkActive, 1); state.mkActive = Math.max(0, Math.min(state.mkActive, state.markers.length - 1)); markersChanged(); };
+// Marcador → centro: mantém a largura e centraliza a varredura na frequência do marcador
+$('mkCenter').onclick = () => {
+  const m = curMk(); if (!m) return;
+  const p = params(), span = p.stopMHz - p.startMHz, f = m.f / 1e6;
+  let a = f - span / 2, b = f + span / 2;
+  for (const [lo, hi] of [[0.1, 350], [240, 960]]) if (p.startMHz >= lo && p.stopMHz <= hi) { if (a < lo) { b += lo - a; a = lo; } if (b > hi) { a -= b - hi; b = hi; } }
+  state.zoomStack.push([p.startMHz, p.stopMHz]); $('btnZoomBack').disabled = false;
+  setParams({ startMHz: +a.toFixed(3), stopMHz: +b.toFixed(3) }); saveSettings();
+  setStatus(`Centro em ${f.toFixed(3)} MHz`);
+};
+// Marcador → canal: usa a frequência do marcador como canal de interesse
+$('mkCh').onclick = () => {
+  const m = curMk(); if (!m) return;
+  $('chF').value = (m.f / 1e6).toFixed(4); if (!$('chBw').value) $('chBw').value = 12.5;
+  checkParams(); saveSettings(); drawSpectrum(); setStatus(`Canal de interesse: ${(m.f / 1e6).toFixed(4)} MHz`);
+};
+$('mkTable').onclick = e => { const tr = e.target.closest('tr'); if (!tr) return; state.mkActive = +tr.dataset.mk; markersChanged(); };
+// Valores dos marcadores num ponto coletado (média e max hold da coleta)
+function markerValues(freqs, dbm, maxhold) {
+  const t = { freqs }, out = {};
+  const mk = resolveMarkers(t, { cur: dbm, avg: dbm, max: maxhold || dbm });
+  mk.forEach((m, k) => { out['m' + (k + 1)] = m.dbm; out['m' + (k + 1) + 'f'] = m.f; });
+  return out;
+}
+
 function specIndexAt(clientX) {
   const t = state.trace; if (!t) return null;
   const r = $('spec').getBoundingClientRect(), x = clientX - r.left;
   const frac = (x - SPEC_PAD.l) / (r.width - SPEC_PAD.l - SPEC_PAD.r);
   return Math.max(0, Math.min(t.freqs.length - 1, Math.round(frac * (t.freqs.length - 1))));
 }
-$('spec').addEventListener('pointerdown', e => { state.cursor = specIndexAt(e.clientX); drawSpectrum(); $('spec').setPointerCapture(e.pointerId); });
+// Toque/arrasto: move o marcador ativo (que deixa de seguir o pico) ou, sem marcadores, só lê o valor
+function specTouch(e) {
+  const i = specIndexAt(e.clientX); if (i == null) return;
+  const m = curMk();
+  if (m) { m.f = state.trace.freqs[i]; m.track = false; saveMarkers(); } else state.cursor = i;
+  drawSpectrum();
+}
+$('spec').addEventListener('pointerdown', e => { specTouch(e); $('spec').setPointerCapture(e.pointerId); });
 // Toque duplo: aproxima 4x em torno da frequência tocada (respeitando os limites do dispositivo)
 let lastTap = 0;
 $('spec').addEventListener('pointerup', e => {
@@ -383,7 +537,7 @@ $('btnZoomBack').onclick = () => {
   setParams({ startMHz: z[0], stopMHz: z[1] }); saveSettings();
   $('btnZoomBack').disabled = !state.zoomStack.length;
 };
-$('spec').addEventListener('pointermove', e => { if (e.buttons) { state.cursor = specIndexAt(e.clientX); drawSpectrum(); } });
+$('spec').addEventListener('pointermove', e => { if (e.buttons) specTouch(e); });
 
 const heat = (t, a) => `hsla(${(1 - Math.max(0, Math.min(1, t))) * 240},85%,50%,${a})`;
 function drawWaterfall() {
@@ -561,12 +715,13 @@ function downloadBlob(name, blob) { const a = document.createElement('a'); a.hre
 const download = (name, text, type) => downloadBlob(name, new Blob([text], { type }));
 const stamp = () => new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-');
 $('btnCsv').onclick = () => {
-  const head = 'id,label,time,device,input,floor,x,y,x_m,y_m,lat,lon,gps_acc_m,start_mhz,stop_mhz,points,average,rbw_khz,att_db,offset_db,peak_dbm,peak_hz,mean_dbm,chpow_dbm,ch_mhz,ch_bw_khz,ch_dbm';
+  const head = 'id,label,time,device,input,floor,x,y,x_m,y_m,lat,lon,gps_acc_m,start_mhz,stop_mhz,points,average,rbw_khz,att_db,offset_db,peak_dbm,peak_hz,mean_dbm,chpow_dbm,ch_mhz,ch_bw_khz,ch_dbm,m1_mhz,m1_dbm,m2_mhz,m2_dbm,m3_mhz,m3_dbm,m4_mhz,m4_dbm';
   const rows = state.points.map(p => {
     const fl = state.floors.find(f => f.id === (p.floor ?? state.floors[0]?.id));
     return [p.id, JSON.stringify(p.label), p.time, p.device, p.input, p.pos ? JSON.stringify(fl?.name ?? '') : '', p.pos?.[0] ?? '', p.pos?.[1] ?? '', p.xm?.toFixed(2) ?? '', p.ym?.toFixed(2) ?? '',
       p.gps?.lat ?? '', p.gps?.lon ?? '', p.gps?.acc ?? '', p.startMHz, p.stopMHz, p.points, p.average, p.rbw ?? 'auto', p.att ?? 'auto', p.offset ?? 0,
-      p.max.toFixed(2), p.fmax, p.mean.toFixed(2), p.chpow.toFixed(2), p.chMHz ?? '', p.chMHz != null ? p.chBwKHz : '', p.ch != null ? p.ch.toFixed(2) : ''].join(',');
+      p.max.toFixed(2), p.fmax, p.mean.toFixed(2), p.chpow.toFixed(2), p.chMHz ?? '', p.chMHz != null ? p.chBwKHz : '', p.ch != null ? p.ch.toFixed(2) : '',
+      ...[1, 2, 3, 4].flatMap(k => p['m' + k] != null ? [(p['m' + k + 'f'] / 1e6).toFixed(4), p['m' + k].toFixed(2)] : ['', ''])].join(',');
   });
   download(`survey-${stamp()}.csv`, [head, ...rows].join('\n'), 'text/csv');
 };
@@ -653,6 +808,9 @@ function saveSettings() { save('settings', { ...params(), device: $('device').va
   selectDevice();
   state.points = (await load('points')) || [];
   state.profiles = (await load('profiles')) || []; showProfiles();
+  const mk = await load('markers');
+  if (mk) { state.markers = mk.list || []; state.mkActive = mk.active || 0; state.mkDelta = !!mk.delta; }
+  showMarkerBar();
   // andares: migra a planta única das versões anteriores para o "Andar 1"
   state.floors = (await load('floors')) || [];
   if (!state.floors.length) {
