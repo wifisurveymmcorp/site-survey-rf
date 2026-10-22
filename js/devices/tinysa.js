@@ -50,7 +50,7 @@ export const tinysa = {
     await this.t.open();
     this.ch = new LineChannel(this.t, 'ch> ', log);
     this.input = null;
-    await this.ch.cmd('', 3000).catch(() => {}); // sincroniza no prompt
+    await this.ch.drain(); // limpa o que estiver no buffer antes do primeiro comando
     return (await this.ch.cmd('version')).trim().split(/\r?\n/)[0];
   },
   async disconnect() { await this.t?.close(); },

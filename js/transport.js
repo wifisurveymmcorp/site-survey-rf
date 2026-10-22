@@ -55,9 +55,11 @@ export class WebUsbCdcTransport {
   async close() { try { await this.dev?.close(); } catch (_) {} }
 }
 
-// Escolhe o transporte disponível: Web Serial primeiro, WebUSB como reserva.
+// Escolhe o transporte: Web Serial no computador, WebUSB no Android ou como reserva.
+// No Android o Web Serial não lista o TinySA (testado no Chrome em 22/10/2026), então lá usamos WebUSB direto.
 export function pickTransport(prefer, baudRate, usbFilters) {
-  if (prefer !== 'webusb' && WebSerialTransport.available())
+  const android = /Android/i.test(navigator.userAgent);
+  if (prefer !== 'webusb' && !(android && WebUsbCdcTransport.available()) && WebSerialTransport.available())
     return new WebSerialTransport(baudRate, usbFilters.map(f => ({ usbVendorId: f.vendorId, usbProductId: f.productId })));
   if (WebUsbCdcTransport.available()) return new WebUsbCdcTransport(baudRate, usbFilters);
   throw new Error('Este navegador não tem Web Serial nem WebUSB. Use o Chrome no Android ou no computador.');
@@ -76,25 +78,40 @@ export class LineChannel {
     this.queue = p.catch(() => {});
     return p;
   }
+  // Lê um pedaço do transporte com timeout, mantendo a leitura pendente para não perder bytes
+  async _read(ms) {
+    this.pending ??= this.t.read();
+    let timer;
+    const chunk = await Promise.race([this.pending, new Promise(res => { timer = setTimeout(() => res(null), ms); })])
+      .finally(() => clearTimeout(timer));
+    if (chunk) { this.pending = null; this.buf += this.dec.decode(chunk, { stream: true }); }
+    return !!chunk;
+  }
+  // Descarta tudo que chegar até a linha ficar em silêncio (lixo de sessões anteriores, prompts extras)
+  async drain(quietMs = 300) {
+    await this.t.write(new TextEncoder().encode('\r'));
+    while (await this._read(quietMs)) {}
+    if (this.buf) this.log('descartado: ' + JSON.stringify(this.buf.slice(-200)));
+    this.buf = '';
+  }
   async _cmd(line, timeoutMs) {
+    this.buf = ''; // o comando anterior já terminou; o que sobrou é lixo
     await this.t.write(new TextEncoder().encode(line + '\r'));
     const deadline = Date.now() + timeoutMs;
-    while (!this.buf.includes(this.prompt)) {
+    for (;;) {
+      // A resposta é o que vem depois do eco do comando e antes do próximo prompt;
+      // isso ignora respostas atrasadas de comandos anteriores.
+      const e = line ? this.buf.indexOf(line) : 0;
+      const p = e >= 0 ? this.buf.indexOf(this.prompt, e + line.length) : -1;
+      if (p >= 0) {
+        const out = this.buf.slice(e + line.length, p).replace(/^\r?\n/, '');
+        this.buf = this.buf.slice(p + this.prompt.length);
+        this.log('> ' + line + '\n' + (out.length > 300 ? out.slice(0, 300) + '…' : out));
+        return out;
+      }
       const left = deadline - Date.now();
       if (left <= 0) throw new Error('sem resposta para: ' + line);
-      // Mantém a leitura pendente entre timeouts para não perder bytes
-      this.pending ??= this.t.read();
-      let timer;
-      const chunk = await Promise.race([this.pending, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('sem resposta para: ' + line)), left); })])
-        .finally(() => clearTimeout(timer));
-      this.pending = null;
-      this.buf += this.dec.decode(chunk, { stream: true });
+      await this._read(left);
     }
-    const i = this.buf.indexOf(this.prompt);
-    let out = this.buf.slice(0, i); this.buf = this.buf.slice(i + this.prompt.length);
-    const nl = out.indexOf('\n');
-    if (line && nl >= 0 && out.slice(0, nl).includes(line.split(' ')[0])) out = out.slice(nl + 1); // remove eco
-    this.log('> ' + line + '\n' + (out.length > 300 ? out.slice(0, 300) + '…' : out));
-    return out;
   }
 }
