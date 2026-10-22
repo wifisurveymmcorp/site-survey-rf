@@ -5,7 +5,7 @@ const $ = id => document.getElementById(id);
 
 const APP_VERSION = '0.7';
 const CHANGELOG = [
-  ['0.7', 'Botão Reiniciar TinySA (comando reset, reconecta sozinho) e destravamento automático quando ele para de responder; Voltar do Android não fecha mais o app de uma vez; marcadores M1 a M4 como nos analisadores de bancada: pico, próximo pico, seguir pico, delta em relação ao M1, marcador para centro e para canal; valores dos marcadores salvos em cada ponto, no CSV, no relatório e como métrica do mapa.'],
+  ['0.7', 'Botão Reiniciar TinySA (comando reset, reconecta sozinho) e destravamento automático quando ele para de responder; Voltar do Android não fecha mais o app de uma vez; tela fica acesa o tempo todo com o app aberto; marcadores M1 a M4 como nos analisadores de bancada: pico, próximo pico, seguir pico, delta em relação ao M1, marcador para centro e para canal; valores dos marcadores salvos em cada ponto, no CSV, no relatório e como métrica do mapa.'],
   ['0.6', 'Canal de interesse como métrica do mapa; RBW, atenuação e offset; perfis salvos; coleta automática andando; vários andares e escala na planta; mapa GPS com OpenStreetMap; zoom no espectro com toque duplo; exportar PNG e relatório em PDF.'],
   ['0.5', 'Nova interface em abas (Medir, Mapa, Dados); modo ao vivo com traços atual, média e max hold; waterfall; pico marcado e leitura ao tocar no gráfico; legenda de cores com limites; reconecta sem pedir para escolher o aparelho de novo.'],
   ['0.4', 'Tela de Ajuda, aviso de espectro plano (antena), indicador online/offline.'],
@@ -131,14 +131,20 @@ $('btnProfDel').onclick = async () => {
   state.profiles.splice(i, 1); await save('profiles', state.profiles); showProfiles();
 };
 
-let wakeLock = null;
-async function keepAwake(on) {
+// Mantém a tela acesa enquanto o app está aberto na frente: se a tela apagar, o Android pode cortar o USB
+// e o espelhamento. O Android solta a trava ao trocar de app ou em economia de bateria, então pedimos de novo.
+let wakeLock = null, wakeWarned = false;
+async function keepAwake(on = true) {
   try {
-    if (on && 'wakeLock' in navigator) wakeLock = await navigator.wakeLock.request('screen');
-    else { await wakeLock?.release(); wakeLock = null; }
-  } catch (_) {}
+    if (on && 'wakeLock' in navigator && !wakeLock && document.visibilityState === 'visible') {
+      wakeLock = await navigator.wakeLock.request('screen');
+      wakeLock.addEventListener('release', () => { wakeLock = null; });
+    }
+  } catch (e) { if (!wakeWarned) log('não foi possível manter a tela acesa: ' + e.message); wakeWarned = true; }
 }
-document.addEventListener('visibilitychange', () => { if (state.connected && document.visibilityState === 'visible') keepAwake(true); });
+document.addEventListener('visibilitychange', () => keepAwake());
+addEventListener('pointerdown', () => keepAwake()); // alguns aparelhos só liberam após um toque
+keepAwake();
 
 function setConnected(on, text) {
   state.connected = on;
@@ -179,7 +185,7 @@ $('btnReboot').onclick = async () => {
 $('btnDisconnect').onclick = async () => {
   setLive(false); $('autoCap').checked = false;
   await withDevice(() => state.device.disconnect());
-  setConnected(false, 'desconectado'); keepAwake(false);
+  setConnected(false, 'desconectado');
 };
 
 // ---------- Traços (atual, média, max hold) e waterfall ----------
