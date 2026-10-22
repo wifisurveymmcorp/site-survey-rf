@@ -55,6 +55,7 @@ document.addEventListener('visibilitychange', () => { if (state.connected && doc
 
 $('btnConnect').onclick = async () => {
   $('btnConnect').disabled = true;
+  log(`diagnóstico: ${navigator.userAgent} | Web Serial: ${'serial' in navigator ? 'sim' : 'não'} | WebUSB: ${'usb' in navigator ? 'sim' : 'não'} | conexão: ${$('transport').value}`);
   try {
     const v = await state.device.connect({ log, prefer: $('transport').value });
     state.connected = true;

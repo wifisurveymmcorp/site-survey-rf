@@ -4,7 +4,9 @@
 // O Basic tem dois conectores: LOW (0,1–350 MHz) e HIGH (240–960 MHz), escolhidos com "mode low|high input".
 import { pickTransport, LineChannel } from '../transport.js';
 
-const USB_FILTERS = [{ vendorId: 0x0483, productId: 0x5740 }]; // STM32 Virtual COM (TinySA)
+// Sem filtro: a janela do Chrome lista todos os dispositivos USB/seriais, o que ajuda a diagnosticar.
+// O TinySA aparece como STM32 Virtual COM (VID 0x0483, PID 0x5740).
+const USB_FILTERS = [];
 
 const BANDS = [
   ['FM 88–108 MHz', 88, 108],
