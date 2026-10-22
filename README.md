@@ -11,7 +11,7 @@ App web (PWA) para site survey de RF com o **TinySA Basic**, pensado para celula
 5. Escolha a faixa, carregue a planta (opcional), toque na planta onde você está e toque em **Coletar ponto**.
 6. Ao terminar, use **Exportar CSV/JSON**.
 
-Os pontos ficam salvos no celular mesmo se o app fechar. Depois de instalado, o app abre sem internet.
+Os pontos ficam salvos no celular mesmo se o app fechar. Depois de instalado, o app abre sem internet. O botão **Ajuda** no topo do app explica a coleta, a antena e os problemas comuns.
 
 ### TinySA Basic: entradas LOW e HIGH
 
@@ -22,7 +22,7 @@ O Basic tem dois conectores. O app escolhe o modo sozinho e avisa onde a antena 
 
 ### Se a conexão falhar
 
-- Em **Opções de conexão**, troque para **Forçar WebUSB** e tente de novo.
+- No Android o Web Serial não enxerga o TinySA; o modo **Automático** já usa WebUSB lá. Se precisar, escolha **Forçar WebUSB** em **Opções de conexão**.
 - Use **Copiar log** e envie o conteúdo.
 - Para depurar sem ocupar a USB: ative **Depuração por Wi‑Fi** nas Opções do desenvolvedor do Android e abra `chrome://inspect` no PC.
 

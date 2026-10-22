@@ -2,6 +2,14 @@ import { DEVICES } from './devices/index.js';
 import { save, load } from './store.js';
 
 const $ = id => document.getElementById(id);
+
+const APP_VERSION = '0.4';
+const CHANGELOG = [
+  ['0.4', 'Tela de Ajuda, aviso de espectro plano (antena), indicador online/offline.'],
+  ['0.3', 'Testado com TinySA Basic real no Android: conexão por WebUSB, correção das respostas atrasadas, atualizações chegam na hora.'],
+  ['0.2', 'App instalável no Android, funciona offline, sessão salva no celular, faixas prontas do Basic (inclui TETRA 380–430 MHz).'],
+  ['0.1', 'Protótipo: varredura, marcação na planta e GPS, mapa de calor, exportação CSV/JSON.'],
+];
 const state = { device: null, connected: false, pos: null, gps: null, points: [], planImg: null, planBlob: null, lastScan: null };
 
 // ---------- Log ----------
@@ -15,7 +23,23 @@ window.addEventListener('error', e => log('ERRO: ' + e.message));
 window.addEventListener('unhandledrejection', e => log('ERRO: ' + (e.reason?.message || e.reason)));
 $('btnCopyLog').onclick = () => navigator.clipboard.writeText($('log').textContent).then(() => setStatus('log copiado'));
 
-function setStatus(s, bad = false) { $('capStatus').textContent = s; $('capStatus').classList.toggle('bad', bad); }
+function setStatus(s, bad = false) { $('capStatus').textContent = s; $('capStatus').classList.toggle('bad', bad); $('capStatus').classList.remove('warn'); }
+
+// Espectro sem nenhum pico acima do ruído costuma ser antena no conector errado ou desligada
+function flatHint(dbm, input) {
+  const sorted = [...dbm].sort((a, b) => a - b), median = sorted[sorted.length >> 1], max = sorted.at(-1);
+  if (max - median >= 6 || max > -80) return '';
+  return `espectro plano: confira se a antena está no conector ${input === 'high' ? 'HIGH' : 'LOW'}.`;
+}
+
+// ---------- Ajuda / estado ----------
+$('ver').textContent = 'versão ' + APP_VERSION;
+$('changelog').innerHTML = CHANGELOG.map(([v, t]) => `<li><b>${v}</b>: ${t}</li>`).join('');
+$('btnHelp').onclick = () => $('help').showModal();
+$('btnHelpClose').onclick = () => $('help').close();
+$('help').addEventListener('click', e => { if (e.target === $('help')) $('help').close(); });
+function showNet() { const on = navigator.onLine; $('net').textContent = on ? 'online' : 'offline'; $('net').classList.toggle('off', !on); }
+addEventListener('online', showNet); addEventListener('offline', showNet); showNet();
 
 // ---------- Dispositivo ----------
 $('device').innerHTML = DEVICES.map((d, i) => `<option value="${i}">${d.name}</option>`).join('');
@@ -120,6 +144,8 @@ $('btnCapture').onclick = async () => {
     rec.label ||= 'P' + rec.id;
     state.points.push(rec); state.lastScan = rec;
     setStatus(`${rec.label}: pico ${m.max.toFixed(1)} dBm em ${(m.fmax / 1e6).toFixed(3)} MHz`);
+    const flat = flatHint(dbm, rec.input);
+    if (flat) { $('capStatus').textContent += ' — ' + flat; $('capStatus').classList.add('warn'); log('aviso: ' + flat); }
     if (navigator.vibrate) navigator.vibrate(80);
     $('label').value = '';
     await save('points', state.points);

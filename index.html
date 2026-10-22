@@ -36,13 +36,28 @@
   #bar button { margin:0; font-weight:600; }
   #bar .status { flex:1; }
   #btnCapture { flex:0 0 46%; min-height:52px; }
+  button.small { width:auto; min-height:34px; padding:4px 12px; margin:0; }
+  .pill { font-size:11px; padding:2px 8px; border-radius:99px; border:1px solid var(--line); color:var(--muted); }
+  .pill.off { color:#b26b00; border-color:#b26b00; }
+  .warn { color:#b26b00; }
+  dialog { width:min(720px, calc(100vw - 32px)); max-height:calc(100vh - 48px); border:1px solid var(--line); border-radius:12px; background:var(--card); color:var(--fg); padding:0; }
+  dialog::backdrop { background:rgba(0,0,0,.5); }
+  #help .head { position:sticky; top:0; background:var(--card); display:flex; align-items:center; gap:8px; padding:12px 16px; border-bottom:1px solid var(--line); }
+  #help .head h2 { margin:0 auto 0 0; font-size:15px; text-transform:none; letter-spacing:0; color:var(--fg); }
+  #help .body { padding:4px 16px 16px; }
+  #help h3 { font-size:14px; margin:18px 0 6px; }
+  #help p, #help li { color:var(--fg); }
+  #help ol, #help ul { padding-left:20px; margin:6px 0; }
+  #help code { font-size:12px; background:var(--bg); padding:1px 4px; border-radius:4px; }
   details summary { cursor:pointer; color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }
 </style>
 </head>
 <body>
 <header>
   <h1>Site Survey RF</h1>
+  <span id="net" class="pill"></span>
   <span id="conn" class="status">desconectado</span>
+  <button id="btnHelp" class="sec small">Ajuda</button>
 </header>
 <main>
   <div class="col">
@@ -122,6 +137,54 @@
     </section>
   </div>
 </main>
+<dialog id="help">
+  <div class="head"><h2>Ajuda</h2><span id="ver" class="status"></span><button id="btnHelpClose" class="sec small">Fechar</button></div>
+  <div class="body">
+    <h3>Como fazer uma coleta</h3>
+    <ol>
+      <li>Ligue o TinySA e conecte no celular com um cabo <b>USB OTG</b>.</li>
+      <li>Em <b>Dispositivo</b>, escolha <b>TinySA Basic (USB)</b> e toque em <b>Conectar</b>. Escolha <b>tinySA</b> na lista e toque em <b>OK</b> quando o Android pedir permissão.</li>
+      <li>Escolha a <b>Faixa pronta</b> (ou digite início e fim em MHz).</li>
+      <li>Carregue a <b>Imagem da planta</b> (foto ou print da planta baixa). É opcional.</li>
+      <li>Toque na planta no lugar onde você está, dê um nome ao ponto se quiser e toque em <b>Coletar ponto</b>.</li>
+      <li>Repita em cada ponto. A partir de 3 pontos o mapa de calor aparece.</li>
+      <li>No fim, use <b>Exportar CSV</b> (planilha) ou <b>Exportar JSON</b> (sessão completa, com o espectro de cada ponto).</li>
+    </ol>
+
+    <h3>Antena: conector LOW ou HIGH</h3>
+    <p>O TinySA Basic tem dois conectores. O app troca o modo sozinho e mostra embaixo da faixa onde a antena deve estar:</p>
+    <ul>
+      <li><b>LOW</b>: 0,1 a 350 MHz (FM, VHF, aeronáutico, TV VHF).</li>
+      <li><b>HIGH</b>: 240 a 960 MHz (TETRA, UHF, TV digital, 4G 700, 850, 900).</li>
+    </ul>
+    <p>Se o espectro vier todo plano, perto de −100 dBm, quase sempre a antena está no conector errado ou desconectada. O app avisa quando isso acontece.</p>
+
+    <h3>Leituras e pontos</h3>
+    <ul>
+      <li><b>Pontos</b>: resolução da varredura (até 450). Mais pontos = mais detalhe e mais demora.</li>
+      <li><b>Leituras (média)</b>: quantas varreduras são feitas e somadas em média em cada ponto. 3 é um bom equilíbrio.</li>
+      <li><b>Métrica do mapa</b>: <i>pico</i> mostra o sinal mais forte da faixa; <i>média</i> o nível médio; <i>potência integrada</i> soma toda a energia da faixa.</li>
+      <li>Para apagar um ponto, use <b>apagar</b> na tabela. <b>Nova sessão</b> apaga todos (exporte antes).</li>
+    </ul>
+
+    <h3>Funciona sem internet?</h3>
+    <p>Sim. Depois de abrir o app uma vez com internet, ele fica guardado no celular e abre offline. Os pontos, a planta e as configurações ficam salvos no próprio celular, mesmo se o app fechar. Só o GPS depende do sinal de satélite, não da internet. O indicador no topo mostra <b>online</b> ou <b>offline</b>.</p>
+    <p>Para instalar: abra o endereço no Chrome e use o menu ⋮ → <b>Instalar app</b>.</p>
+
+    <h3>Problemas comuns</h3>
+    <ul>
+      <li><b>"Nenhum dispositivo compatível encontrado"</b>: o TinySA está desligado, o cabo não é OTG, ou o modo de conexão é Web Serial. No celular, deixe <b>Opções de conexão</b> em <i>Automático</i> (usa WebUSB) ou <i>Forçar WebUSB</i>.</li>
+      <li><b>"sem resposta para..."</b>: desconecte, tire e recoloque o cabo, e conecte de novo.</li>
+      <li><b>"resposta do scan vazia ou inválida"</b>: toque em Desconectar e Conectar de novo. Se continuar, use <b>Copiar log</b> e envie o conteúdo.</li>
+      <li><b>App não atualiza</b>: com internet, feche e abra o app duas vezes.</li>
+      <li><b>Depurar sem ocupar a USB do celular</b>: ative <i>Depuração por Wi‑Fi</i> nas Opções do desenvolvedor; no PC, use <code>adb connect IP:porta</code> e <code>scrcpy</code> ou <code>chrome://inspect</code>.</li>
+    </ul>
+
+    <h3>Novidades</h3>
+    <ul id="changelog"></ul>
+  </div>
+</dialog>
+
 <div id="bar">
   <span id="capStatus" class="status">Conecte um dispositivo para começar.</span>
   <button id="btnCapture" disabled>Coletar ponto</button>
