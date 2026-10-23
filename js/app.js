@@ -3,6 +3,18 @@ import { save, load } from './store.js';
 
 const $ = id => document.getElementById(id);
 
+// A página e o JS precisam ser da mesma publicação. Logo depois de publicar, o GitHub às vezes entrega
+// o index.html antigo com o app.js novo; nesse caso recarregamos uma vez pedindo a página sem cache.
+const BUILD = '13';
+if (document.querySelector('meta[name=app-build]')?.content !== BUILD) {
+  let tried = null; try { tried = sessionStorage.getItem('buildReload'); } catch (_) {}
+  if (tried !== BUILD) {
+    try { sessionStorage.setItem('buildReload', BUILD); } catch (_) {}
+    location.replace('./?r=' + Date.now());
+    throw new Error('versões diferentes de página e app; recarregando');
+  }
+}
+
 const APP_VERSION = '0.8';
 const CHANGELOG = [
   ['0.8', 'Linha de limite com alarme (apito e vibração); aviso de nova versão para atualizar sem fechar o app; destravamento do TinySA com prazo em cada passo e reset do USB; log mais limpo (varreduras repetidas viram uma linha com contador).'],
