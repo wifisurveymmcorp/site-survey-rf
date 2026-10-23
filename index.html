@@ -47,6 +47,9 @@
   .legend { display:flex; gap:12px; flex-wrap:wrap; font-size:12px; color:var(--muted); margin-top:6px; }
   .legend i { display:inline-block; width:14px; height:3px; vertical-align:middle; margin-right:4px; border-radius:2px; }
   .mkbar { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; }
+  .mkbar label.inl { display:flex; align-items:center; gap:6px; margin:0; font-size:13px; }
+  .mkbar label.inl input { width:84px; min-height:34px; padding:4px 8px; margin:0; }
+  #updBanner { position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:50; background:var(--acc); color:#fff; border-radius:99px; padding:8px 16px; font-weight:600; box-shadow:0 2px 10px rgba(0,0,0,.3); }
   .mkbar select.small { width:auto; min-height:34px; padding:4px 8px; margin:0; font-size:13px; }
   .mktable { width:100%; border-collapse:collapse; font-size:13px; margin-top:6px; }
   .mktable td { padding:5px 6px; border-bottom:1px solid var(--line); }
@@ -167,6 +170,11 @@
       </div>
       <div id="readout" class="status"></div>
       <div class="mkbar">
+        <label class="inl">Limite <input id="limDbm" type="number" inputmode="numeric" step="1" placeholder="dBm"></label>
+        <button id="limAlarm" class="sec small toggle" title="Apita e vibra quando algum sinal passa do limite">Alarme</button>
+        <span id="limState" class="status"></span>
+      </div>
+      <div class="mkbar">
         <button id="mkAdd" class="small">+ Marcador</button>
         <button id="mkPeak" class="sec small">Pico</button>
         <button id="mkNext" class="sec small">Próx. pico</button>
@@ -270,6 +278,7 @@
   <span id="capStatus" class="status">Conecte um dispositivo para começar.</span>
   <button id="btnCapture" disabled>Coletar ponto</button>
 </div>
+<button id="updBanner" hidden>Nova versão do app — toque para atualizar</button>
 <nav>
   <button data-tab="medir" class="active"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,18 7,16 9,6 11,17 14,12 16,17 22,18"/></svg>Medir</button>
   <button data-tab="mapa"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s-7-6.2-7-11a7 7 0 0 1 14 0c0 4.8-7 11-7 11z"/><circle cx="12" cy="10" r="2.5"/></svg>Mapa</button>
@@ -298,6 +307,9 @@
       <li><b>Max hold</b> (laranja): o maior valor visto em cada frequência. Pega sinais que aparecem e somem, como rádios TETRA e DMR. <b>Zerar max</b> recomeça.</li>
       <li><b>Waterfall</b>: cada linha é uma varredura, a mais nova em cima; mostra quando cada canal transmite.</li>
     </ul>
+
+    <h3>Linha de limite e alarme</h3>
+    <p>Digite um nível em <b>Limite</b> (dBm) para ver uma linha vermelha no gráfico. Com <b>Alarme</b> ligado, o celular apita e vibra quando algum sinal passa da linha, e o registro fica no log com a frequência. Serve para caçar interferência ou conferir se um canal está no ar.</p>
 
     <h3>Conector LOW ou HIGH</h3>
     <p>O selo azul <b>LOW</b> ou laranja <b>HIGH</b> ao lado de "Espectro" mostra qual conector o TinySA está lendo. Por padrão ele escolhe pela faixa; entre 240 e 350 MHz os dois servem, e você pode forçar em <b>Varredura → Conector da antena</b>. O app não consegue ver fisicamente onde a antena está ligada, mas o botão <b>Qual conector?</b> (em Dispositivo) varre FM no LOW e 900 MHz no HIGH e diz qual dos dois recebe sinal. Se a faixa que você está medindo ficar sem sinal, o app testa sozinho o outro conector e mostra um <b>alerta vermelho</b> (com vibração) quando a antena parece estar no conector errado.</p>

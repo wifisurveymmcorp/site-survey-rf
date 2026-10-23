@@ -3,8 +3,9 @@ import { save, load } from './store.js';
 
 const $ = id => document.getElementById(id);
 
-const APP_VERSION = '0.7';
+const APP_VERSION = '0.8';
 const CHANGELOG = [
+  ['0.8', 'Linha de limite com alarme (apito e vibração); aviso de nova versão para atualizar sem fechar o app; destravamento do TinySA com prazo em cada passo e reset do USB; log mais limpo (varreduras repetidas viram uma linha com contador).'],
   ['0.7', 'Seletor e selo LOW/HIGH, teste de qual conector tem antena e alerta quando a antena parece estar no conector errado; botão Reiniciar TinySA (comando reset, reconecta sozinho) e destravamento automático quando ele para de responder; Voltar do Android não fecha mais o app de uma vez; tela fica acesa o tempo todo com o app aberto; marcadores M1 a M4 como nos analisadores de bancada: pico, próximo pico, seguir pico, delta em relação ao M1, marcador para centro e para canal; valores dos marcadores salvos em cada ponto, no CSV, no relatório e como métrica do mapa.'],
   ['0.6', 'Canal de interesse como métrica do mapa; RBW, atenuação e offset; perfis salvos; coleta automática andando; vários andares e escala na planta; mapa GPS com OpenStreetMap; zoom no espectro com toque duplo; exportar PNG e relatório em PDF.'],
   ['0.5', 'Nova interface em abas (Medir, Mapa, Dados); modo ao vivo com traços atual, média e max hold; waterfall; pico marcado e leitura ao tocar no gráfico; legenda de cores com limites; reconecta sem pedir para escolher o aparelho de novo.'],
@@ -27,9 +28,18 @@ const state = {
 };
 
 // ---------- Log ----------
+// Mensagens repetidas (como a mesma varredura no ao vivo) viram uma linha só, com contador
+let lastLog = { s: null, n: 0, len: 0 };
 function log(s) {
-  const el = $('log');
-  el.textContent += `[${new Date().toLocaleTimeString()}] ${s}\n`;
+  const el = $('log'), now = new Date().toLocaleTimeString();
+  if (s === lastLog.s && el.textContent.length === lastLog.len) {
+    lastLog.n++;
+    el.textContent = el.textContent.slice(0, lastLog.start) + `[${now}] ${s} (×${lastLog.n})\n`;
+  } else {
+    lastLog = { s, n: 1, start: el.textContent.length };
+    el.textContent += `[${now}] ${s}\n`;
+  }
+  lastLog.len = el.textContent.length;
   if (el.textContent.length > 50000) el.textContent = el.textContent.slice(-40000);
   el.scrollTop = el.scrollHeight;
 }
@@ -168,7 +178,7 @@ $('btnConnect').onclick = async () => {
   log(`diagnóstico: ${navigator.userAgent} | Web Serial: ${'serial' in navigator ? 'sim' : 'não'} | WebUSB: ${'usb' in navigator ? 'sim' : 'não'} | conexão: ${$('transport').value}`);
   try {
     const v = await state.device.connect({ log, prefer: $('transport').value });
-    setConnected(true, v); log('conectado: ' + v);
+    setConnected(true, v); log('conectado: ' + v); drawSpectrum();
     $('cfgDev').open = false;
     setStatus('Ligue o Ao vivo para acompanhar o sinal, ou toque em Coletar.');
     keepAwake(true);
@@ -294,6 +304,7 @@ async function liveLoop() {
     try {
       const s = await sweepOnce(p);
       addSweep(p, s);
+      checkLimit(s);
       await checkPort(p, s);
       $('sweepRate').textContent = `${((performance.now() - t0) / 1000).toFixed(1)} s/varredura`;
     } catch (e) { log('ao vivo: ' + e.message); setStatus('Ao vivo parou: ' + e.message, 'bad'); setLive(false); }
@@ -413,7 +424,7 @@ function drawSpectrum() {
   g.font = '11px system-ui'; g.fillStyle = css('--muted');
   const t = state.trace;
   if (!t) { showMarkerTable(state.markers.map(m => ({ f: m.f, dbm: null, trace: m.trace, track: m.track }))); g.fillText(state.connected ? 'Toque em Ao vivo ou Coletar para ver o espectro.' : 'Conecte o TinySA para ver o espectro.', 12, 24); return; }
-  const all = [...t.max, ...t.cur];
+  const lim = limit(), all = [...t.max, ...t.cur, ...(lim != null ? [lim] : [])];
   const lo = Math.floor(Math.min(...t.cur) / 10) * 10 - 10, hi = Math.ceil(Math.max(...all) / 10) * 10 + 5;
   const f0 = t.freqs[0], f1 = t.freqs.at(-1);
   const X = f => P.l + (f - f0) / (f1 - f0) * (w - P.l - P.r), Y = v => P.t + (hi - v) / (hi - lo) * (h - P.t - P.b);
@@ -435,6 +446,11 @@ function drawSpectrum() {
       g.fillStyle = 'rgba(46,160,67,.18)'; g.fillRect(X(Math.max(f0, c - half)), P.t, Math.max(2, X(Math.min(f1, c + half)) - X(Math.max(f0, c - half))), h - P.t - P.b);
       g.fillStyle = css('--ok'); g.font = '600 11px system-ui'; g.textAlign = 'center'; g.fillText('canal', X(c), P.t + 12); g.font = '11px system-ui';
     }
+  }
+  // linha de limite
+  if (lim != null) {
+    g.strokeStyle = css('--bad'); g.lineWidth = 1.2; g.setLineDash([6, 4]); g.beginPath(); g.moveTo(P.l, Y(lim)); g.lineTo(w - P.r, Y(lim)); g.stroke(); g.setLineDash([]);
+    g.fillStyle = css('--bad'); g.font = '600 11px system-ui'; g.textAlign = 'right'; g.fillText(`limite ${lim} dBm`, w - P.r - 2, Y(lim) - 4); g.font = '11px system-ui';
   }
   // traços
   const line = (arr, color, width) => { g.strokeStyle = color; g.lineWidth = width; g.beginPath(); arr.forEach((v, i) => i ? g.lineTo(X(t.freqs[i]), Y(v)) : g.moveTo(X(t.freqs[i]), Y(v))); g.stroke(); };
@@ -468,6 +484,31 @@ function drawSpectrum() {
   if (ri != null && ri < t.freqs.length) $('readout').textContent = `${fmtMHz(t.freqs[ri])} MHz — atual ${t.cur[ri].toFixed(1)} · média ${t.avg[ri].toFixed(1)} · max ${t.max[ri].toFixed(1)} dBm`;
   else $('readout').textContent = 'Toque no gráfico para ler um valor.';
 }
+
+// ---------- Linha de limite ----------
+const limit = () => $('limDbm').value === '' ? null : +$('limDbm').value;
+let audioCtx = null, lastAlarm = 0;
+function beep() {
+  try {
+    audioCtx ??= new AudioContext();
+    const o = audioCtx.createOscillator(), gn = audioCtx.createGain();
+    o.frequency.value = 1800; gn.gain.value = 0.2; o.connect(gn); gn.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + 0.25);
+  } catch (_) {}
+}
+// Confere a varredura contra o limite; com o alarme ligado apita e vibra (no máximo a cada 2 s)
+function checkLimit(s) {
+  const lim = limit(); if (lim == null) { $('limState').textContent = ''; return; }
+  let i = -1; s.dbm.forEach((v, k) => { if (v > lim && (i < 0 || v > s.dbm[i])) i = k; });
+  if (i < 0) { $('limState').textContent = 'abaixo do limite'; $('limState').className = 'status'; return; }
+  const txt = `acima: ${s.dbm[i].toFixed(1)} dBm em ${fmtMHz(s.freqs[i])} MHz`;
+  $('limState').textContent = txt; $('limState').className = 'status bad';
+  if ($('limAlarm').classList.contains('on') && Date.now() - lastAlarm > 2000) {
+    lastAlarm = Date.now(); beep(); if (navigator.vibrate) navigator.vibrate(150); log('alarme de limite: ' + txt);
+  }
+}
+$('limDbm').addEventListener('input', () => { saveSettings(); drawSpectrum(); if (state.trace) checkLimit({ dbm: state.trace.cur, freqs: state.trace.freqs }); });
+$('limAlarm').onclick = () => { $('limAlarm').classList.toggle('on'); if ($('limAlarm').classList.contains('on')) { beep(); if (limit() == null) setStatus('Digite o limite em dBm para o alarme funcionar.', 'warn'); } saveSettings(); };
 
 // ---------- Marcadores ----------
 const MK_COLORS = ['#e5484d', '#3e63dd', '#2f9e44', '#c77d00'];
@@ -857,8 +898,19 @@ $('btnReport').onclick = () => {
   else downloadBlob(`relatorio-${stamp()}.html`, new Blob([html], { type: 'text/html' }));
 };
 
+// ---------- Atualização ----------
+// O app aberto por horas não pega versões novas sozinho: compara a versão publicada do sw.js e oferece recarregar
+async function swVersion() { try { return (await (await fetch('sw.js', { cache: 'no-store' })).text()).match(/VERSION = '([^']+)'/)?.[1]; } catch (_) { return null; } }
+async function watchUpdates() {
+  const mine = await swVersion(); if (!mine) return;
+  const check = async () => { const v = await swVersion(); if (v && v !== mine) $('updBanner').hidden = false; };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') check(); });
+  setInterval(check, 10 * 60 * 1000);
+}
+$('updBanner').onclick = () => location.reload();
+
 // ---------- Configurações ----------
-function saveSettings() { save('settings', { ...params(), device: $('device').value, autoGps: $('autoGps').checked, lo: $('lo').value, hi: $('hi').value, metric: $('metric').value, mapView: $('mapView').value, autoSec: $('autoSec').value }); }
+function saveSettings() { save('settings', { ...params(), device: $('device').value, autoGps: $('autoGps').checked, lo: $('lo').value, hi: $('hi').value, metric: $('metric').value, mapView: $('mapView').value, autoSec: $('autoSec').value, limDbm: $('limDbm').value, limAlarm: $('limAlarm').classList.contains('on') }); }
 
 (async function init() {
   const s = await load('settings');
@@ -867,6 +919,7 @@ function saveSettings() { save('settings', { ...params(), device: $('device').va
     selectDevice(); setParams(s);
     $('autoGps').checked = !!s.autoGps; $('lo').value = s.lo ?? ''; $('hi').value = s.hi ?? '';
     if (s.metric) $('metric').value = s.metric; if (s.mapView) $('mapView').value = s.mapView; if (s.autoSec) $('autoSec').value = s.autoSec;
+    $('limDbm').value = s.limDbm ?? ''; $('limAlarm').classList.toggle('on', !!s.limAlarm);
   }
   selectDevice();
   state.points = (await load('points')) || [];
@@ -889,4 +942,5 @@ function saveSettings() { save('settings', { ...params(), device: $('device').va
   if (state.points.length) log(`sessão restaurada: ${state.points.length} pontos`);
   if (!('serial' in navigator)) log(('usb' in navigator) ? 'Web Serial indisponível; será usado WebUSB.' : 'Navegador sem Web Serial e sem WebUSB.');
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(e => log('service worker: ' + e.message));
+  watchUpdates();
 })();
