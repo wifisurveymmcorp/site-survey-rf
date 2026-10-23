@@ -4,6 +4,9 @@
 // O Basic tem dois conectores: LOW (0,1–350 MHz) e HIGH (240–960 MHz), escolhidos com "mode low|high input".
 import { pickTransport, LineChannel } from '../transport.js';
 
+// Rejeita se a promessa não terminar no prazo
+const within = (p, ms, what) => Promise.race([Promise.resolve(p), new Promise((_, rej) => setTimeout(() => rej(new Error(what + ': sem resposta em ' + ms / 1000 + ' s')), ms))]);
+
 // Sem filtro: a janela do Chrome lista todos os dispositivos USB/seriais, o que ajuda a diagnosticar.
 // O TinySA aparece como STM32 Virtual COM (VID 0x0483, PID 0x5740).
 const USB_FILTERS = [];
@@ -62,13 +65,24 @@ export const tinysa = {
   },
   async disconnect() { await this.t?.close(); },
   // Reabre o USB sem pedir para escolher o aparelho, tentando até o prazo (o TinySA leva alguns segundos para voltar)
-  async _reopen(totalMs) {
-    await this.t?.close();
+  // Cada passo tem prazo, porque com o USB preso as chamadas do navegador podem nunca voltar.
+  async _reopen(totalMs, usbReset = false) {
+    if (usbReset && this.t?.reset) { this.log('reset do USB'); await within(this.t.reset(), 3000, 'reset do USB').catch(e => this.log(e.message)); }
+    await within(this.t?.close(), 2000, 'fechar USB').catch(e => this.log(e.message));
     const end = Date.now() + totalMs;
-    for (;;) {
+    for (let k = 1; ; k++) {
       await new Promise(r => setTimeout(r, 1000));
-      try { this.t = pickTransport(this.prefer, 115200, USB_FILTERS); await this.t.open({ noPrompt: true }); return await this._hello(4000); }
-      catch (e) { await this.t?.close(); if (Date.now() > end) throw new Error('o TinySA não voltou: ' + e.message); }
+      try {
+        this.t = pickTransport(this.prefer, 115200, USB_FILTERS);
+        await within(this.t.open({ noPrompt: true }), 4000, 'abrir USB');
+        const v = await within(this._hello(3000), 6000, 'versão');
+        this.log(`reconectado na tentativa ${k}`);
+        return v;
+      } catch (e) {
+        this.log(`tentativa ${k}: ${e.message}`);
+        await within(this.t?.close(), 2000, 'fechar USB').catch(() => {});
+        if (Date.now() > end) throw new Error('o TinySA não voltou: ' + e.message);
+      }
     }
   },
   // Destrava sem reiniciar: limpa a linha e confere se responde; se não, fecha e reabre o USB
@@ -76,7 +90,7 @@ export const tinysa = {
     const limit = new Promise((_, rej) => setTimeout(() => rej(new Error('USB parado')), 5000));
     try { await Promise.race([(async () => { await this.ch.drain(); await this.ch.cmd('version', 3000); })(), limit]); this.input = this.rbw = this.att = null; this.log('recuperado sem reabrir o USB'); return; }
     catch (e) { this.log('sem resposta (' + e.message + '); reabrindo o USB'); }
-    await this._reopen(8000);
+    await this._reopen(10000, true);
   },
   // Reinicia o TinySA pelo comando "reset" e reconecta sozinho
   async reboot() {

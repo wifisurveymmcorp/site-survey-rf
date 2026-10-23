@@ -1,5 +1,5 @@
 // Cache simples para o app abrir sem internet no campo. Troque VERSION a cada publicação.
-const VERSION = 'v10';
+const VERSION = 'v11';
 const FILES = ['./', 'index.html', 'manifest.webmanifest', 'icon.svg', 'icon-192.png', 'icon-512.png',
   'js/app.js', 'js/store.js', 'js/transport.js', 'js/devices/index.js', 'js/devices/tinysa.js'];
 self.addEventListener('install', e => e.waitUntil(caches.open(VERSION).then(c => c.addAll(FILES.map(f => new Request(f, { cache: 'reload' })))).then(() => self.skipWaiting())));

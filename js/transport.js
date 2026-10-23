@@ -65,6 +65,8 @@ export class WebUsbCdcTransport {
     return new Uint8Array(r.data.buffer);
   }
   async close() { try { await this.dev?.close(); } catch (_) {} }
+  // Reset de USB: destrava endpoints presos sem precisar tirar o cabo
+  async reset() { await this.dev?.reset(); }
 }
 
 // Escolhe o transporte: Web Serial no computador, WebUSB no Android ou como reserva.
@@ -120,7 +122,9 @@ export class LineChannel {
       if (p >= 0) {
         const out = this.buf.slice(e + line.length, p).replace(/^\r?\n/, '');
         this.buf = this.buf.slice(p + this.prompt.length);
-        this.log('> ' + line + '\n' + (out.length > 300 ? out.slice(0, 300) + '…' : out));
+        // respostas longas (scan) viram uma linha de resumo para o log não encher
+        const n = out.split('\n').filter(Boolean).length;
+        this.log('> ' + line + (n > 5 ? ` (${n} linhas)` : '\n' + out.trim()));
         return out;
       }
       const left = deadline - Date.now();

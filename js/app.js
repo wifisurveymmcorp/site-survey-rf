@@ -275,7 +275,10 @@ async function sweepNow(p) {
     if (!state.device.recover) throw e;
     log('varredura falhou (' + e.message + '); tentando destravar');
     setStatus('O TinySA não respondeu; destravando…', 'warn');
-    try { await state.device.recover(); s = await state.device.sweep(p, { pos: state.pos }); }
+    try {
+      await Promise.race([state.device.recover(), new Promise((_, rej) => setTimeout(() => rej(new Error('não destravou em 25 s')), 25000))]);
+      s = await state.device.sweep(p, { pos: state.pos });
+    }
     catch (e2) { throw new Error(e2.message + ' — toque em Reiniciar TinySA, ou desligue e ligue o aparelho'); }
     setStatus('TinySA destravado, seguindo.');
   }
